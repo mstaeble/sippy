@@ -20,6 +20,14 @@ var PostgresFunctions = []PostgresFunction{
 		Name:       "test_results",
 		Definition: testResultFunction,
 	},
+	{
+		Name:       "cr_log_factorial",
+		Definition: crLogFactorialFunction,
+	},
+	{
+		Name:       "cr_fisher_exact_right",
+		Definition: crFisherExactRightFunction,
+	},
 }
 
 func syncPostgresFunctions(db *gorm.DB) error {
@@ -31,6 +39,60 @@ func syncPostgresFunctions(db *gorm.DB) error {
 	}
 	return nil
 }
+
+const crLogFactorialFunction = `
+CREATE FUNCTION cr_log_factorial(n int) RETURNS double precision
+    LANGUAGE plpgsql IMMUTABLE STRICT
+    AS $$
+DECLARE
+    result double precision := 0;
+    i int;
+BEGIN
+    IF n <= 1 THEN RETURN 0; END IF;
+    FOR i IN 2..n LOOP
+        result := result + ln(i::double precision);
+    END LOOP;
+    RETURN result;
+END;
+$$;
+`
+
+const crFisherExactRightFunction = `
+CREATE FUNCTION cr_fisher_exact_right(a int, b int, c int, d int) RETURNS double precision
+    LANGUAGE plpgsql IMMUTABLE STRICT
+    AS $$
+DECLARE
+    n int;
+    row1 int;
+    col1 int;
+    max_a int;
+    log_p double precision;
+    p double precision;
+    p_sum double precision;
+    i int;
+BEGIN
+    IF a < 0 OR b < 0 OR c < 0 OR d < 0 THEN RETURN 1.0; END IF;
+    n := a + b + c + d;
+    IF n = 0 THEN RETURN 1.0; END IF;
+    row1 := a + b;
+    col1 := a + c;
+    max_a := LEAST(row1, col1);
+    log_p := cr_log_factorial(row1) + cr_log_factorial(n - row1)
+           + cr_log_factorial(col1) + cr_log_factorial(n - col1)
+           - cr_log_factorial(a) - cr_log_factorial(b)
+           - cr_log_factorial(c) - cr_log_factorial(d)
+           - cr_log_factorial(n);
+    p := exp(log_p);
+    p_sum := p;
+    FOR i IN (a + 1)..max_a LOOP
+        p := p * ((col1 - i + 1)::double precision * (row1 - i + 1)::double precision)
+             / (i::double precision * (n - col1 - row1 + i)::double precision);
+        p_sum := p_sum + p;
+    END LOOP;
+    RETURN LEAST(p_sum, 1.0);
+END;
+$$;
+`
 
 const testResultFunction = `
 CREATE FUNCTION public.test_results(start timestamp without time zone, boundary timestamp without time zone, endstamp timestamp without time zone) RETURNS TABLE(id bigint, name text, previous_successes bigint, previous_flakes bigint, previous_failures bigint, previous_runs bigint, current_successes bigint, current_flakes bigint, current_failures bigint, current_runs bigint, current_pass_percentage double precision, current_failure_percentage double precision, previous_pass_percentage double precision, previous_failure_percentage double precision, net_improvement double precision, release text)
