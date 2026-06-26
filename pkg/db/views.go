@@ -83,6 +83,12 @@ var PostgresMatViews = []PostgresView{
 		IndexColumns:   []string{"release", "architecture", "stream", "prow_job_run_id", "test_id", "suite_id"},
 		ReplaceStrings: map[string]string{},
 	},
+	{
+		Name:         "cr_test_status_matview",
+		Definition:   crTestStatusMatView,
+		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
+		RefreshPhase: 1, // after phase 0 matviews to share daily summary data in buffer cache
+	},
 }
 
 // PostgresViews are regular, non-materialized views:
@@ -481,4 +487,17 @@ WHERE
     AND pjr.id = pjrt.prow_job_run_id
     AND pj.id = pjr.prow_job_id
 ORDER BY pjrt.id DESC
+`
+
+const crTestStatusMatView = `
+SELECT
+    tds.test_id,
+    tds.suite_id,
+    tds.variant_combination_id,
+    tds.release,
+    SUM(tds.runs)::int AS total_count,
+    SUM(tds.successes + tds.flakes)::int AS success_count,
+    SUM(tds.flakes)::int AS flake_count
+FROM test_daily_summaries tds
+GROUP BY tds.test_id, tds.suite_id, tds.variant_combination_id, tds.release
 `
