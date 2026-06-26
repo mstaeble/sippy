@@ -184,6 +184,34 @@ type TestDailySummary struct {
 	Runs                 int32     `gorm:"column:runs;not null;default:0"`
 }
 
+// ProwGATestStatus stores pre-aggregated test status for GA release base windows.
+// Populated from BigQuery for historical date ranges (ga-30d to ga) that fall
+// outside the rolling window covered by test_daily_summaries.
+type ProwGATestStatus struct {
+	TestID               uint      `gorm:"not null;uniqueIndex:idx_prow_ga_test_statuses_unique,priority:2"`
+	SuiteID              uint      `gorm:"not null;default:0;uniqueIndex:idx_prow_ga_test_statuses_unique,priority:3"`
+	VariantCombinationID uint      `gorm:"not null;uniqueIndex:idx_prow_ga_test_statuses_unique,priority:4"`
+	Release              string    `gorm:"not null;uniqueIndex:idx_prow_ga_test_statuses_unique,priority:1"`
+	TotalCount           int       `gorm:"not null"`
+	SuccessCount         int       `gorm:"not null"`
+	FlakeCount           int       `gorm:"not null"`
+	GADate               time.Time `gorm:"type:date;not null"`
+}
+
+// ProwGARawTestDatum stores raw BigQuery test results for GA release windows.
+// Fetched once per GA date and persisted so that the aggregation into
+// ProwGATestStatus can be re-run cheaply when dimension tables change.
+type ProwGARawTestDatum struct {
+	Release  string `gorm:"not null;index"`
+	TestName string `gorm:"not null"`
+	JobName  string `gorm:"not null"`
+	Suite    string `gorm:"not null;default:''"`
+	Passes   int64  `gorm:"not null;default:0"`
+	Failures int64  `gorm:"not null;default:0"`
+	Flakes   int64  `gorm:"not null;default:0"`
+	Runs     int64  `gorm:"not null;default:0"`
+}
+
 // Bug represents a Jira bug.
 type Bug struct {
 	ID              uint           `json:"id" gorm:"primaryKey"`

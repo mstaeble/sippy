@@ -142,6 +142,8 @@ func (d *DB) UpdateSchema(reportEnd *time.Time) error {
 		&models.ReleasePullRequest{},
 		&models.ReleaseRepository{},
 		&models.ReleaseJobRun{},
+		&models.ProwGATestStatus{},
+		&models.ProwGARawTestDatum{},
 		&models.VariantCombination{},
 		&models.ProwJob{},
 		&models.ProwJobRun{},
