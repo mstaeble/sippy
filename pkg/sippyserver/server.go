@@ -24,6 +24,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/openshift/sippy/pkg/api/componentreadiness/dataprovider"
+	"github.com/openshift/sippy/pkg/api/componentreadiness/matviewquery"
 	"github.com/openshift/sippy/pkg/api/componentreadiness/utils"
 	"github.com/openshift/sippy/pkg/api/jobartifacts"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport"
@@ -400,7 +401,29 @@ func RefreshData(dbc *db.DB, cacheClient cache.Cache, refreshMatviewsOnlyIfEmpty
 		dailySummaryRefreshMetric.Observe(float64(time.Since(summaryStart).Milliseconds()))
 	}
 	refreshMaterializedViews(dbc, cacheClient, refreshMatviewsOnlyIfEmpty)
+	refreshCRCellGrid(dbc)
+	if err := matviewquery.RefreshDimensionCache(context.Background(), dbc); err != nil {
+		log.WithError(err).Error("failed to refresh dimension cache")
+	}
 	log.Info("Refresh complete")
+}
+
+func refreshCRCellGrid(dbc *db.DB) {
+	start := time.Now()
+	if err := dbc.DB.Exec(`
+		TRUNCATE cr_cell_grids;
+		INSERT INTO cr_cell_grids (release, component, variant_combination_id)
+		SELECT DISTINCT mv.release, tow.component, mv.variant_combination_id
+		FROM cr_test_status_matview mv
+		JOIN test_ownerships tow ON tow.test_id = mv.test_id
+		    AND (tow.suite_id = mv.suite_id OR (tow.suite_id IS NULL AND mv.suite_id = 0))
+		WHERE tow.staff_approved_obsolete = false
+		  AND mv.variant_combination_id IS NOT NULL
+	`).Error; err != nil {
+		log.WithError(err).Error("failed to refresh CR cell grid")
+		return
+	}
+	log.WithField("elapsed", time.Since(start)).Info("refreshed CR cell grid")
 }
 
 func (s *Server) hasCapabilities(capabilities []string) bool {

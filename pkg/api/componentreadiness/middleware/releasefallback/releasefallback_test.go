@@ -164,7 +164,7 @@ func Test_PreAnalysis(t *testing.T) {
 	}
 	for i, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			rfb := NewReleaseFallbackMiddleware(nil, test.reqOpts, releaseConfigs)
+			rfb := NewReleaseFallbackMiddleware(nil, nil, test.reqOpts, releaseConfigs)
 			rfb.cachedFallbackTestStatuses = &tests[i].fallbackReleases
 			err := rfb.PreAnalysis(test.testKey, test.testStats)
 			assert.NoError(t, err)

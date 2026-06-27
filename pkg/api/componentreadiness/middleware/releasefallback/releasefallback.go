@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/openshift/sippy/pkg/api/componentreadiness/dataprovider"
+	"github.com/openshift/sippy/pkg/api/componentreadiness/matviewquery"
 	"github.com/openshift/sippy/pkg/api/componentreadiness/middleware"
 	"github.com/openshift/sippy/pkg/api/componentreadiness/utils"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crstatus"
@@ -16,6 +17,7 @@ import (
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/testdetails"
 	apiCache "github.com/openshift/sippy/pkg/apis/cache"
 	v1 "github.com/openshift/sippy/pkg/apis/sippy/v1"
+	"github.com/openshift/sippy/pkg/db"
 	"github.com/openshift/sippy/pkg/util/sets"
 	log "github.com/sirupsen/logrus"
 
@@ -33,11 +35,13 @@ var _ middleware.Middleware = &ReleaseFallback{}
 
 func NewReleaseFallbackMiddleware(
 	provider dataprovider.DataProvider,
+	dbc *db.DB,
 	reqOptions reqopts.RequestOptions,
 	releaseConfigs []v1.Release,
 ) *ReleaseFallback {
 	return &ReleaseFallback{
 		dataProvider:   provider,
+		dbc:            dbc,
 		log:            log.WithField("middleware", "ReleaseFallback"),
 		reqOptions:     reqOptions,
 		releaseConfigs: releaseConfigs,
@@ -55,6 +59,7 @@ func NewReleaseFallbackMiddleware(
 // This is done when we have sufficient test coverage, and a better pass rate.
 type ReleaseFallback struct {
 	dataProvider               dataprovider.DataProvider
+	dbc                        *db.DB
 	cachedFallbackTestStatuses *FallbackReleases
 	log                        log.FieldLogger
 	reqOptions                 reqopts.RequestOptions
@@ -173,7 +178,7 @@ func (r *ReleaseFallback) PostAnalysis(testKey crtest.Identification, testStats 
 func (r *ReleaseFallback) getFallbackBaseQueryStatus(ctx context.Context,
 	allJobVariants crtest.JobVariants,
 	release string, start, end time.Time) []error {
-	generator := newFallbackTestQueryReleasesGenerator(r.dataProvider, r.reqOptions, allJobVariants, release, start, end, r.releaseConfigs)
+	generator := newFallbackTestQueryReleasesGenerator(r.dataProvider, r.dbc, r.reqOptions, allJobVariants, release, start, end, r.releaseConfigs)
 
 	cachedFallbackTestStatuses, errs := api.GetDataFromCacheOrGenerate[*FallbackReleases](
 		ctx, r.dataProvider.Cache(), r.reqOptions.CacheOption,
@@ -296,6 +301,7 @@ func (r *ReleaseFallback) TestDetailsAnalyze(report *testdetails.Report) error {
 // each, which can then be used to return the best basis data from those past releases for comparison.
 type fallbackTestQueryReleasesGenerator struct {
 	dataProvider               dataprovider.DataProvider
+	dbc                        *db.DB
 	cacheOption                apiCache.RequestOptions
 	allJobVariants             crtest.JobVariants
 	BaseRelease                string
@@ -309,6 +315,7 @@ type fallbackTestQueryReleasesGenerator struct {
 
 func newFallbackTestQueryReleasesGenerator(
 	provider dataprovider.DataProvider,
+	dbc *db.DB,
 	reqOptions reqopts.RequestOptions,
 	allJobVariants crtest.JobVariants,
 	release string, start, end time.Time,
@@ -317,6 +324,7 @@ func newFallbackTestQueryReleasesGenerator(
 
 	generator := fallbackTestQueryReleasesGenerator{
 		dataProvider:   provider,
+		dbc:            dbc,
 		cacheOption:    reqOptions.CacheOption,
 		allJobVariants: allJobVariants,
 		BaseRelease:    release,
@@ -456,6 +464,14 @@ func (f *fallbackTestQueryReleasesGenerator) updateTestStatuses(release crtest.R
 }
 
 func (f *fallbackTestQueryReleasesGenerator) getTestFallbackRelease(ctx context.Context, release string, start, end time.Time) (crstatus.ReportTestStatus, []error) {
+	if f.dbc != nil {
+		baseStatus, err := f.queryFallbackFromMatview(ctx, release)
+		if err == nil {
+			return crstatus.ReportTestStatus{BaseStatus: baseStatus}, nil
+		}
+		log.WithError(err).WithField("release", release).Debug("matview fallback query failed, falling back to data provider")
+	}
+
 	fallbackReqOpts := f.ReqOptions
 	fallbackReqOpts.BaseRelease.Name = release
 	fallbackReqOpts.BaseRelease.Start = start
@@ -467,6 +483,18 @@ func (f *fallbackTestQueryReleasesGenerator) getTestFallbackRelease(ctx context.
 	}
 
 	return crstatus.ReportTestStatus{BaseStatus: baseStatus}, nil
+}
+
+func (f *fallbackTestQueryReleasesGenerator) queryFallbackFromMatview(ctx context.Context, release string) (map[string]crstatus.TestStatus, error) {
+	fallbackOpts := f.ReqOptions
+	fallbackOpts.BaseRelease.Name = release
+	fallbackOpts.SampleRelease = fallbackOpts.BaseRelease
+
+	qr, err := matviewquery.QueryMatviewTestStatus(ctx, f.dbc, fallbackOpts)
+	if err != nil {
+		return nil, err
+	}
+	return qr.BaseStatus, nil
 }
 
 func newFallbackReleases() FallbackReleases {

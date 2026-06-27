@@ -184,6 +184,15 @@ type TestDailySummary struct {
 	Runs                 int32     `gorm:"column:runs;not null;default:0"`
 }
 
+// CRCellGrid stores which (release, component, variant_combination_id) cells
+// have test data. Populated during matview refresh so that request-time queries
+// don't need to scan the full matview to discover the report grid.
+type CRCellGrid struct {
+	Release              string `gorm:"not null;uniqueIndex:idx_cr_cell_grid_unique,priority:1"`
+	Component            string `gorm:"not null;uniqueIndex:idx_cr_cell_grid_unique,priority:2"`
+	VariantCombinationID uint   `gorm:"not null;uniqueIndex:idx_cr_cell_grid_unique,priority:3"`
+}
+
 // ProwGATestStatus stores pre-aggregated test status for GA release base windows.
 // Populated from BigQuery for historical date ranges (ga-30d to ga) that fall
 // outside the rolling window covered by test_daily_summaries.

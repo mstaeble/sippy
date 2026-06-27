@@ -142,6 +142,7 @@ func (d *DB) UpdateSchema(reportEnd *time.Time) error {
 		&models.ReleasePullRequest{},
 		&models.ReleaseRepository{},
 		&models.ReleaseJobRun{},
+		&models.CRCellGrid{},
 		&models.ProwGATestStatus{},
 		&models.ProwGARawTestDatum{},
 		&models.VariantCombination{},

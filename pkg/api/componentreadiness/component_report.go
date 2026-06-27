@@ -26,6 +26,7 @@ import (
 
 	"github.com/openshift/sippy/pkg/api"
 	"github.com/openshift/sippy/pkg/api/componentreadiness/dataprovider"
+	"github.com/openshift/sippy/pkg/api/componentreadiness/matviewquery"
 	"github.com/openshift/sippy/pkg/api/componentreadiness/middleware"
 	"github.com/openshift/sippy/pkg/api/componentreadiness/middleware/releasefallback"
 	"github.com/openshift/sippy/pkg/api/componentreadiness/utils"
@@ -278,7 +279,7 @@ func (c *ComponentReportGenerator) initializeMiddleware() {
 	c.middlewares = middleware.List{}
 	// Initialize all our middleware applicable to this request.
 	if c.ReqOptions.AdvancedOption.IncludeMultiReleaseAnalysis && c.ReqOptions.SampleRelease.PullRequestOptions == nil {
-		c.middlewares = append(c.middlewares, releasefallback.NewReleaseFallbackMiddleware(c.dataProvider, c.ReqOptions, c.releaseConfigs))
+		c.middlewares = append(c.middlewares, releasefallback.NewReleaseFallbackMiddleware(c.dataProvider, c.dbc, c.ReqOptions, c.releaseConfigs))
 	}
 	if c.dbc != nil {
 		c.middlewares = append(c.middlewares, regressiontracker.NewRegressionTrackerMiddleware(c.dbc, c.ReqOptions))
@@ -296,6 +297,15 @@ func (c *ComponentReportGenerator) initializeMiddleware() {
 func (c *ComponentReportGenerator) GenerateReport(ctx context.Context) (crtype.ComponentReport, []error) {
 	before := time.Now()
 
+	if c.dbc != nil && c.matviewAvailable(ctx) {
+		report, errs := c.generateReportFromMatview(ctx)
+		if len(errs) == 0 {
+			log.Infof("GenerateReport (matview) completed in %s", time.Since(before))
+			return report, nil
+		}
+		log.WithField("errors", len(errs)).Warn("matview report generation failed, falling back to data provider")
+	}
+
 	// Load all test pass/fail counts, both sample and basis
 	componentReportTestStatus, errs := c.getTestStatus(ctx)
 	if len(errs) > 0 {
@@ -304,10 +314,6 @@ func (c *ComponentReportGenerator) GenerateReport(ctx context.Context) (crtype.C
 
 	var err error
 
-	// generateComponentTestReport modifies SampleStatus removing matches from BaseStatus
-	// resulting in erroneous sample results count
-	// msg="GenerateReport completed in 1m49.528090955s with 0 sample results and 133132 base results from db"
-	// get the length before processing
 	sampleLen := len(componentReportTestStatus.SampleStatus)
 
 	// perform analysis and generate report:
@@ -320,6 +326,54 @@ func (c *ComponentReportGenerator) GenerateReport(ctx context.Context) (crtype.C
 	report.GeneratedAt = componentReportTestStatus.GeneratedAt
 	log.Infof("GenerateReport completed in %s with %d sample results and %d base results from db", time.Since(before), sampleLen, len(componentReportTestStatus.BaseStatus))
 
+	return report, nil
+}
+
+func (c *ComponentReportGenerator) matviewAvailable(ctx context.Context) bool {
+	var count int64
+	err := c.dbc.DB.WithContext(ctx).Raw("SELECT COUNT(*) FROM cr_test_status_matview WHERE release = ? LIMIT 1", c.ReqOptions.SampleRelease.Name).Scan(&count).Error
+	return err == nil && count > 0
+}
+
+func (c *ComponentReportGenerator) generateReportFromMatview(ctx context.Context) (crtype.ComponentReport, []error) {
+	qr, err := matviewquery.QueryMatviewTestStatus(ctx, c.dbc, c.ReqOptions)
+	if err != nil {
+		return crtype.ComponentReport{}, []error{err}
+	}
+
+	baseStatusMap := qr.BaseStatus
+	sampleStatusMap := qr.SampleStatus
+
+	// Cell grid: add placeholder entries so generateComponentTestReport
+	// discovers all (component, variant_column) cells.
+	for _, g := range qr.CellGrid {
+		key := crtest.KeyWithVariants{
+			TestID:   "grid:" + g.Component,
+			Variants: g.Variants,
+		}
+		keyStr := key.KeyOrDie()
+		if _, ok := sampleStatusMap[keyStr]; ok {
+			continue
+		}
+		variantSlice := make([]string, 0, len(g.Variants))
+		for k, v := range g.Variants {
+			variantSlice = append(variantSlice, k+":"+v)
+		}
+		placeholder := crstatus.TestStatus{
+			Component: g.Component,
+			Variants:  variantSlice,
+			Count:     crtest.Count{TotalCount: 1, SuccessCount: 1},
+		}
+		sampleStatusMap[keyStr] = placeholder
+		baseStatusMap[keyStr] = placeholder
+	}
+
+	report, err := c.generateComponentTestReport(baseStatusMap, sampleStatusMap)
+	if err != nil {
+		return crtype.ComponentReport{}, []error{err}
+	}
+	now := time.Now()
+	report.GeneratedAt = &now
 	return report, nil
 }
 

@@ -69,6 +69,9 @@ type LoadFlags struct {
 	ProwLoadSince           string
 	SkipMatviewRefresh      bool
 	ForceGARefresh          bool
+	DailySummaryStart       string
+	DailySummaryEnd         string
+	DailySummaryRebuild     bool
 }
 
 // want a single total load and refresh time
@@ -111,6 +114,9 @@ func (f *LoadFlags) BindFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&f.ProwLoadSince, "prow-load-since", "", "Override how far back to load prow jobs (e.g. 2024-01-15T00:00:00Z or 72h for 72 hours ago)")
 	fs.BoolVar(&f.SkipMatviewRefresh, "skip-matview-refresh", false, "Skip refreshing materialized views after loading")
 	fs.BoolVar(&f.ForceGARefresh, "force-ga-refresh", false, "Force re-population of GA test status data from BigQuery")
+	fs.StringVar(&f.DailySummaryStart, "daily-summary-start", "", "Override daily summary start date (e.g. 2026-03-20)")
+	fs.StringVar(&f.DailySummaryEnd, "daily-summary-end", "", "Override daily summary end date (e.g. 2026-06-27)")
+	fs.BoolVar(&f.DailySummaryRebuild, "daily-summary-rebuild", false, "Truncate and rebuild daily summaries from scratch")
 }
 
 // nolint:gocyclo
@@ -376,7 +382,24 @@ func NewLoadCommand() *cobra.Command {
 			log.WithField("elapsed", elapsed).Info("database load complete")
 
 			if refreshMatviews && !f.SkipMatviewRefresh {
-				sippyserver.RefreshData(dbc, cacheClient, false, dailysummary.Options{})
+				dsOpts := dailysummary.Options{
+					Rebuild: f.DailySummaryRebuild,
+				}
+				if f.DailySummaryStart != "" {
+					t, err := time.Parse("2006-01-02", f.DailySummaryStart)
+					if err != nil {
+						return fmt.Errorf("invalid --daily-summary-start: %w", err)
+					}
+					dsOpts.StartOverride = &t
+				}
+				if f.DailySummaryEnd != "" {
+					t, err := time.Parse("2006-01-02", f.DailySummaryEnd)
+					if err != nil {
+						return fmt.Errorf("invalid --daily-summary-end: %w", err)
+					}
+					dsOpts.EndOverride = &t
+				}
+				sippyserver.RefreshData(dbc, cacheClient, false, dsOpts)
 			}
 
 			elapsed = time.Since(start)
