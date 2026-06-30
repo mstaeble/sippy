@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_test_daily_summaries_release_date;
