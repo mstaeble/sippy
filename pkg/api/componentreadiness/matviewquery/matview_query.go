@@ -182,11 +182,60 @@ func SelectCRMatview(start, end time.Time) string {
 	}
 }
 
+// checkDateCoverage verifies that test_daily_summaries has data spanning
+// the requested date range for a release. Returns an error if coverage
+// is insufficient, signaling the caller to fall back to BigQuery.
+func checkDateCoverage(ctx context.Context, dbc *db.DB, release string, start, end time.Time) error {
+	var minDate, maxDate *time.Time
+	err := dbc.DB.WithContext(ctx).Raw(
+		"SELECT MIN(summary_date), MAX(summary_date) FROM test_daily_summaries WHERE release = ?",
+		release).Row().Scan(&minDate, &maxDate)
+	if err != nil {
+		return fmt.Errorf("checking date coverage for %s: %w", release, err)
+	}
+	if minDate == nil || maxDate == nil {
+		return fmt.Errorf("no daily summary data for release %s", release)
+	}
+	startDate := start.Truncate(24 * time.Hour)
+	endDate := end.Truncate(24 * time.Hour)
+	if minDate.After(startDate) {
+		return fmt.Errorf("daily summary data for %s starts at %s, need %s",
+			release, minDate.Format("2006-01-02"), startDate.Format("2006-01-02"))
+	}
+	if maxDate.Before(endDate.Add(-24 * time.Hour)) {
+		return fmt.Errorf("daily summary data for %s ends at %s, need %s",
+			release, maxDate.Format("2006-01-02"), endDate.Format("2006-01-02"))
+	}
+	return nil
+}
+
 // QueryMatviewTestStatus runs the failure-only matview query and performs
 // dbGroupBy aggregation and Fisher Exact Test in Go.
 func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.RequestOptions) (*QueryResult, error) {
 	before := time.Now()
 	fLog := log.WithField("func", "QueryMatviewTestStatus")
+
+	// Verify daily summary data covers the requested date ranges before
+	// committing to the PG path. GA base releases are exempt since they
+	// use a separately loaded table.
+	var gaExists bool
+	dbc.DB.WithContext(ctx).Raw(
+		"SELECT EXISTS(SELECT 1 FROM prow_ga_test_statuses WHERE release = @release)",
+		sql.Named("release", opts.BaseRelease.Name)).Scan(&gaExists)
+
+	covG, covCtx := errgroup.WithContext(ctx)
+	covG.Go(func() error {
+		return checkDateCoverage(covCtx, dbc, opts.SampleRelease.Name, opts.SampleRelease.Start, opts.SampleRelease.End)
+	})
+	if !gaExists {
+		covG.Go(func() error {
+			return checkDateCoverage(covCtx, dbc, opts.BaseRelease.Name, opts.BaseRelease.Start, opts.BaseRelease.End)
+		})
+	}
+	if err := covG.Wait(); err != nil {
+		fLog.WithError(err).Warn("insufficient daily summary coverage")
+		return nil, err
+	}
 
 	matchingVCIDs, err := resolveMatchingVCIDs(ctx, dbc, opts.VariantOption.IncludeVariants)
 	if err != nil {
@@ -221,10 +270,6 @@ func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.Reques
 		Start:   opts.BaseRelease.Start,
 		End:     opts.BaseRelease.End,
 	}
-	var gaExists bool
-	dbc.DB.WithContext(ctx).Raw(
-		"SELECT EXISTS(SELECT 1 FROM prow_ga_test_statuses WHERE release = @release)",
-		sql.Named("release", opts.BaseRelease.Name)).Scan(&gaExists)
 	if gaExists {
 		baseSource.Table = "prow_ga_test_statuses"
 		fLog.WithField("release", opts.BaseRelease.Name).Info("using GA test status table for base data")
