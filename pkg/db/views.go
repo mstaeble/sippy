@@ -84,10 +84,34 @@ var PostgresMatViews = []PostgresView{
 		ReplaceStrings: map[string]string{},
 	},
 	{
-		Name:         "cr_test_status_matview",
+		Name:         "cr_test_status_7d_matview",
 		Definition:   crTestStatusMatView,
 		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
-		RefreshPhase: 1, // after phase 0 matviews to share daily summary data in buffer cache
+		RefreshPhase: 1,
+		ReplaceStrings: map[string]string{
+			"|||START|||": "|||TIMENOW||| - INTERVAL '7 DAY'",
+			"|||END|||":   "|||TIMENOW|||",
+		},
+	},
+	{
+		Name:         "cr_test_status_30d_matview",
+		Definition:   crTestStatusMatView,
+		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
+		RefreshPhase: 1,
+		ReplaceStrings: map[string]string{
+			"|||START|||": "|||TIMENOW||| - INTERVAL '30 DAY'",
+			"|||END|||":   "|||TIMENOW|||",
+		},
+	},
+	{
+		Name:         "cr_test_status_90d_matview",
+		Definition:   crTestStatusMatView,
+		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
+		RefreshPhase: 2,
+		ReplaceStrings: map[string]string{
+			"|||START|||": "|||TIMENOW||| - INTERVAL '90 DAY'",
+			"|||END|||":   "|||TIMENOW|||",
+		},
 	},
 }
 
@@ -501,5 +525,6 @@ SELECT
     SUM(tds.flakes)::int AS flake_count
 FROM test_daily_summaries tds
 JOIN prow_jobs pj ON tds.prow_job_id = pj.id
+WHERE tds.summary_date >= |||START||| AND tds.summary_date < |||END|||
 GROUP BY tds.test_id, tds.suite_id, pj.variant_combination_id, tds.release
 `

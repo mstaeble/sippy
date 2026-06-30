@@ -330,8 +330,20 @@ func (c *ComponentReportGenerator) GenerateReport(ctx context.Context) (crtype.C
 }
 
 func (c *ComponentReportGenerator) matviewAvailable(ctx context.Context) bool {
+	matview := matviewquery.SelectCRMatview(c.ReqOptions.SampleRelease.Start, c.ReqOptions.SampleRelease.End)
+	if matview != "" {
+		var count int64
+		err := c.dbc.DB.WithContext(ctx).Raw(
+			fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE release = ? LIMIT 1", matview),
+			c.ReqOptions.SampleRelease.Name).Scan(&count).Error
+		if err == nil && count > 0 {
+			return true
+		}
+	}
 	var count int64
-	err := c.dbc.DB.WithContext(ctx).Raw("SELECT COUNT(*) FROM cr_test_status_matview WHERE release = ? LIMIT 1", c.ReqOptions.SampleRelease.Name).Scan(&count).Error
+	err := c.dbc.DB.WithContext(ctx).Raw(
+		"SELECT COUNT(*) FROM test_daily_summaries WHERE release = ? LIMIT 1",
+		c.ReqOptions.SampleRelease.Name).Scan(&count).Error
 	return err == nil && count > 0
 }
 

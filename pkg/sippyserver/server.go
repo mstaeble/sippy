@@ -414,7 +414,7 @@ func refreshCRCellGrid(dbc *db.DB) {
 		TRUNCATE cr_cell_grids;
 		INSERT INTO cr_cell_grids (release, component, variant_combination_id)
 		SELECT DISTINCT mv.release, tow.component, mv.variant_combination_id
-		FROM cr_test_status_matview mv
+		FROM cr_test_status_90d_matview mv
 		JOIN test_ownerships tow ON tow.test_id = mv.test_id
 		    AND (tow.suite_id = mv.suite_id OR (tow.suite_id IS NULL AND mv.suite_id = 0))
 		WHERE tow.staff_approved_obsolete = false
