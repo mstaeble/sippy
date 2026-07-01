@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"cloud.google.com/go/civil"
 	"github.com/lib/pq"
 	pkgerrors "github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -497,12 +498,10 @@ func transformRelease(r sippyv1.ReleaseRow) sippyv1.Release {
 		Product:         r.Product.StringVal,
 	}
 	if r.GADate.Valid {
-		gaDate := r.GADate.Date.In(time.UTC)
-		release.GADate = &gaDate
+		release.GADate = &r.GADate.Date
 	}
 	if r.DevelStartDate.IsValid() {
-		develStartDate := r.DevelStartDate.In(time.UTC)
-		release.DevelopmentStartDate = &develStartDate
+		release.DevelopmentStartDate = &r.DevelStartDate
 	}
 	if r.Capabilities != nil {
 		for _, capability := range r.Capabilities {
@@ -561,20 +560,27 @@ func DefinitionToRelease(def models.ReleaseDefinition) sippyv1.Release {
 	for _, cap := range def.Capabilities {
 		caps[sippyv1.ReleaseCapability(cap)] = true
 	}
-	return sippyv1.Release{
-		Release:              def.Release,
-		Status:               def.Status,
-		GADate:               def.GADate,
-		DevelopmentStartDate: def.DevelopmentStartDate,
-		PreviousRelease:      def.PreviousRelease,
-		Capabilities:         caps,
-		Product:              def.Product,
+	rel := sippyv1.Release{
+		Release:         def.Release,
+		Status:          def.Status,
+		PreviousRelease: def.PreviousRelease,
+		Capabilities:    caps,
+		Product:         def.Product,
 	}
+	if def.GADate != nil {
+		d := civil.DateOf(*def.GADate)
+		rel.GADate = &d
+	}
+	if def.DevelopmentStartDate != nil {
+		d := civil.DateOf(*def.DevelopmentStartDate)
+		rel.DevelopmentStartDate = &d
+	}
+	return rel
 }
 
 // BuildReleasesResponse creates the API response structure for releases
 func BuildReleasesResponse(releases []sippyv1.Release, lastUpdated time.Time) apitype.Releases {
-	gaDateMap := make(map[string]time.Time)
+	gaDateMap := make(map[string]civil.Date)
 	dateMap := make(map[string]apitype.ReleaseDates)
 	response := apitype.Releases{
 		DeprecatedGADates: gaDateMap,
