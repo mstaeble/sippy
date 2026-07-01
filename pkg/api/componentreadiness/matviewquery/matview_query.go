@@ -118,10 +118,10 @@ func resolveMatchingVCIDs(ctx context.Context, dbc *db.DB, includeVariants map[s
 			formatted[i] = key + ":" + v
 		}
 		if len(formatted) == 1 {
-			clauses = append(clauses, "variants @> ARRAY[?]")
-			args = append(args, formatted[0])
+			clauses = append(clauses, "variants @> ?::text[]")
+			args = append(args, pq.StringArray(formatted))
 		} else {
-			clauses = append(clauses, "variants && ARRAY[?]::text[]")
+			clauses = append(clauses, "variants && ?::text[]")
 			args = append(args, pq.StringArray(formatted))
 		}
 	}
@@ -166,9 +166,6 @@ func (s crDataSource) isDailySummary() bool { return s.Table == "" }
 // SelectCRMatview picks the right time-windowed matview for the given window,
 // or returns empty string if no standard matview matches.
 func SelectCRMatview(start, end time.Time) string {
-	if time.Since(end) > 24*time.Hour {
-		return ""
-	}
 	days := end.Sub(start).Hours() / 24
 	switch {
 	case days >= 5 && days <= 9:
