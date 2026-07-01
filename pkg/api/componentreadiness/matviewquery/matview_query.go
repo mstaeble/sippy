@@ -152,17 +152,11 @@ type ownershipKey struct {
 	SuiteID uint
 }
 
-// crDataSource describes where to read CR test status data.
-// If Table is set, it names a matview or the GA table directly.
-// If Table is empty, query test_daily_summaries with the date range.
+// crDataSource describes where to read CR test status data (always a matview or GA table).
 type crDataSource struct {
 	Table   string
 	Release string
-	Start   time.Time
-	End     time.Time
 }
-
-func (s crDataSource) isDailySummary() bool { return s.Table == "" }
 
 // SelectCRMatview picks the right time-windowed matview for the given window,
 // or returns empty string if no standard matview matches.
@@ -180,28 +174,7 @@ func SelectCRMatview(start, end time.Time) string {
 	}
 }
 
-// checkDateCoverage verifies that test_daily_summaries has data covering
-// the start of the requested date range for a release.
-func checkDateCoverage(ctx context.Context, dbc *db.DB, release string, start time.Time) error {
-	var minDate *time.Time
-	err := dbc.DB.WithContext(ctx).Raw(
-		"SELECT MIN(summary_date) FROM test_daily_summaries WHERE release = ?",
-		release).Row().Scan(&minDate)
-	if err != nil {
-		return fmt.Errorf("checking date coverage for %s: %w", release, err)
-	}
-	if minDate == nil {
-		return fmt.Errorf("no daily summary data for release %s", release)
-	}
-	startDate := start.Truncate(24 * time.Hour)
-	if minDate.After(startDate) {
-		return fmt.Errorf("daily summary data for %s starts at %s, need %s",
-			release, minDate.Format("2006-01-02"), startDate.Format("2006-01-02"))
-	}
-	return nil
-}
-
-// QueryMatviewTestStatus queries the matview (or daily summaries) for failure
+// QueryMatviewTestStatus queries the matview for failure
 // candidates with dbGroupBy aggregation done in SQL, then applies Fisher
 // Exact Test in Go.
 func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.RequestOptions) (*QueryResult, error) {
@@ -212,20 +185,6 @@ func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.Reques
 	dbc.DB.WithContext(ctx).Raw(
 		"SELECT EXISTS(SELECT 1 FROM prow_ga_test_statuses_matview WHERE release = @release)",
 		sql.Named("release", opts.BaseRelease.Name)).Scan(&gaExists)
-
-	covG, covCtx := errgroup.WithContext(ctx)
-	covG.Go(func() error {
-		return checkDateCoverage(covCtx, dbc, opts.SampleRelease.Name, opts.SampleRelease.Start)
-	})
-	if !gaExists {
-		covG.Go(func() error {
-			return checkDateCoverage(covCtx, dbc, opts.BaseRelease.Name, opts.BaseRelease.Start)
-		})
-	}
-	if err := covG.Wait(); err != nil {
-		fLog.WithError(err).Warn("insufficient daily summary coverage")
-		return nil, err
-	}
 
 	matchingVCIDs, err := resolveMatchingVCIDs(ctx, dbc, opts.VariantOption.IncludeVariants)
 	if err != nil {
@@ -244,23 +203,29 @@ func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.Reques
 	dbGroupByKeys := opts.VariantOption.DBGroupBy.List()
 	sort.Strings(dbGroupByKeys)
 
+	sampleTable := SelectCRMatview(opts.SampleRelease.Start, opts.SampleRelease.End)
+	if sampleTable == "" {
+		return nil, fmt.Errorf("no matview covers sample window %s to %s",
+			opts.SampleRelease.Start.Format("2006-01-02"), opts.SampleRelease.End.Format("2006-01-02"))
+	}
 	sampleSource := crDataSource{
-		Table:   SelectCRMatview(opts.SampleRelease.Start, opts.SampleRelease.End),
+		Table:   sampleTable,
 		Release: opts.SampleRelease.Name,
-		Start:   opts.SampleRelease.Start,
-		End:     opts.SampleRelease.End,
 	}
 
 	baseSource := crDataSource{
 		Release: opts.BaseRelease.Name,
-		Start:   opts.BaseRelease.Start,
-		End:     opts.BaseRelease.End,
 	}
 	if gaExists {
 		baseSource.Table = "prow_ga_test_statuses_matview"
 		fLog.WithField("release", opts.BaseRelease.Name).Info("using GA test status table for base data")
 	} else {
-		baseSource.Table = SelectCRMatview(opts.BaseRelease.Start, opts.BaseRelease.End)
+		baseTable := SelectCRMatview(opts.BaseRelease.Start, opts.BaseRelease.End)
+		if baseTable == "" {
+			return nil, fmt.Errorf("no matview covers base window %s to %s",
+				opts.BaseRelease.Start.Format("2006-01-02"), opts.BaseRelease.End.Format("2006-01-02"))
+		}
+		baseSource.Table = baseTable
 	}
 
 	fLog.WithField("sample_source", sourceLabel(sampleSource)).
@@ -298,10 +263,7 @@ func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.Reques
 }
 
 func sourceLabel(s crDataSource) string {
-	if s.Table != "" {
-		return s.Table
-	}
-	return fmt.Sprintf("daily_summaries[%s..%s]", s.Start.Format("2006-01-02"), s.End.Format("2006-01-02"))
+	return s.Table
 }
 
 // buildVCParsedCTE generates a CTE that parses variant_combinations.variants
@@ -353,64 +315,12 @@ func dbGroupByMatchClauses(leftPrefix, rightPrefix string, dbGroupByKeys []strin
 	return strings.Join(clauses, " AND ")
 }
 
-// sourceTableOrCTE returns the table/CTE name for the data source, adding a
-// daily summary CTE to ctes if needed. The returned ref can be used in FROM.
-func sourceTableOrCTE(alias string, src crDataSource, matchingVCIDs []int, ctes *[]string, params map[string]interface{}) string {
-	if !src.isDailySummary() {
-		return src.Table
-	}
-	startParam := alias + "_start"
-	endParam := alias + "_end"
-	releaseParam := alias + "_release"
-	vcidsParam := alias + "_vcids"
-
-	cte := fmt.Sprintf(`%s AS (
-		SELECT tds.test_id, tds.suite_id, pj.variant_combination_id,
-		       tds.release,
-		       SUM(tds.runs)::int AS total_count,
-		       SUM(tds.successes + tds.flakes)::int AS success_count,
-		       SUM(tds.flakes)::int AS flake_count
-		FROM test_daily_summaries tds
-		JOIN prow_jobs pj ON tds.prow_job_id = pj.id
-		WHERE tds.release = @%s
-		  AND tds.summary_date >= @%s AND tds.summary_date < @%s
-		  AND pj.variant_combination_id = ANY(@%s)
-		GROUP BY tds.test_id, tds.suite_id, pj.variant_combination_id, tds.release
-	)`, alias, releaseParam, startParam, endParam, vcidsParam)
-
-	*ctes = append(*ctes, cte)
-	params[startParam] = src.Start
-	params[endParam] = src.End
-	params[releaseParam] = src.Release
-	params[vcidsParam] = pq.Array(matchingVCIDs)
-	return alias
-}
-
 func queryCandidates(ctx context.Context, dbc *db.DB, sample, base crDataSource, matchingVCIDs []int, dbGroupByKeys []string) ([]CandidateRow, error) {
-	var ctes []string
-	params := map[string]interface{}{}
-
-	ctes = append(ctes, buildVCParsedCTE(dbGroupByKeys))
-
-	sampleRef := sourceTableOrCTE("sample_data", sample, matchingVCIDs, &ctes, params)
-	baseRef := sourceTableOrCTE("base_data", base, matchingVCIDs, &ctes, params)
-
-	if !sample.isDailySummary() {
-		params["sample_release"] = sample.Release
-		params["matching_vcids"] = pq.Array(matchingVCIDs)
-	}
-	if !base.isDailySummary() {
-		params["base_release"] = base.Release
-	}
-
-	sampleFilter := ""
-	if !sample.isDailySummary() {
-		sampleFilter = "AND mv.release = @sample_release AND mv.variant_combination_id = ANY(@matching_vcids)"
-	}
-
-	baseFilter := ""
-	if !base.isDailySummary() {
-		baseFilter = "AND mv.release = @base_release"
+	ctes := []string{buildVCParsedCTE(dbGroupByKeys)}
+	params := map[string]interface{}{
+		"sample_release": sample.Release,
+		"base_release":   base.Release,
+		"matching_vcids": pq.Array(matchingVCIDs),
 	}
 
 	dbCols := dbGroupByColumns("vp", dbGroupByKeys)
@@ -425,7 +335,8 @@ func queryCandidates(ctx context.Context, dbc *db.DB, sample, base crDataSource,
 				SUM(mv.flake_count) AS flake_count
 			FROM %s mv
 			JOIN vc_parsed vp ON mv.variant_combination_id = vp.id
-			WHERE TRUE %s
+			WHERE mv.release = @sample_release
+			  AND mv.variant_combination_id = ANY(@matching_vcids)
 			GROUP BY mv.test_id, mv.suite_id, %s
 			HAVING SUM(mv.total_count) > SUM(mv.success_count)
 		)
@@ -443,14 +354,14 @@ func queryCandidates(ctx context.Context, dbc *db.DB, sample, base crDataSource,
 			FROM %s mv
 			JOIN vc_parsed vp2 ON mv.variant_combination_id = vp2.id
 			WHERE mv.test_id = s.test_id AND mv.suite_id = s.suite_id
+			  AND mv.release = @base_release
 			  AND %s
-			  %s
 		) b ON true`,
 		strings.Join(ctes, ", "),
 		dbCols,
-		sampleRef, sampleFilter, dbCols,
+		sample.Table, dbCols,
 		variantKey,
-		baseRef, matchClauses, baseFilter)
+		base.Table, matchClauses)
 
 	var namedArgs []interface{}
 	for k, v := range params {
@@ -468,65 +379,23 @@ func queryCellGrid(ctx context.Context, dbc *db.DB, sample, base crDataSource, m
 	vcParsedCTE := buildVCParsedCTE(dbGroupByKeys)
 	variantKey := variantKeyExpr("vp", dbGroupByKeys)
 
-	if !sample.isDailySummary() && !base.isDailySummary() {
-		var rows []CellGridRow
-		err := dbc.DB.WithContext(ctx).Raw(fmt.Sprintf(`
-			WITH %s
-			SELECT DISTINCT cg.component, %s AS variant_key
-			FROM cr_cell_grids cg
-			JOIN vc_parsed vp ON cg.variant_combination_id = vp.id
-			WHERE cg.release IN (@base_release, @sample_release)
-			  AND cg.variant_combination_id = ANY(@matching_vcids)
-		`, vcParsedCTE, variantKey),
-			sql.Named("base_release", base.Release),
-			sql.Named("sample_release", sample.Release),
-			sql.Named("matching_vcids", pq.Array(matchingVCIDs)),
-		).Scan(&rows).Error
-		if err != nil {
-			return nil, fmt.Errorf("querying cell grid: %w", err)
-		}
-		return rows, nil
-	}
-
 	var rows []CellGridRow
 	err := dbc.DB.WithContext(ctx).Raw(fmt.Sprintf(`
 		WITH %s
-		SELECT DISTINCT tow.component, %s AS variant_key
-		FROM test_daily_summaries tds
-		JOIN prow_jobs pj ON tds.prow_job_id = pj.id
-		JOIN vc_parsed vp ON pj.variant_combination_id = vp.id
-		JOIN test_ownerships tow ON tow.test_id = tds.test_id
-		    AND (tow.suite_id = tds.suite_id OR (tow.suite_id IS NULL AND tds.suite_id = 0))
-		WHERE tds.release IN (@base_release, @sample_release)
-		  AND tds.summary_date >= @start AND tds.summary_date < @end
-		  AND pj.variant_combination_id = ANY(@matching_vcids)
-		  AND tow.staff_approved_obsolete = false
-		  AND pj.variant_combination_id IS NOT NULL
+		SELECT DISTINCT cg.component, %s AS variant_key
+		FROM cr_cell_grids cg
+		JOIN vc_parsed vp ON cg.variant_combination_id = vp.id
+		WHERE cg.release IN (@base_release, @sample_release)
+		  AND cg.variant_combination_id = ANY(@matching_vcids)
 	`, vcParsedCTE, variantKey),
 		sql.Named("base_release", base.Release),
 		sql.Named("sample_release", sample.Release),
-		sql.Named("start", earliest(sample.Start, base.Start)),
-		sql.Named("end", latest(sample.End, base.End)),
 		sql.Named("matching_vcids", pq.Array(matchingVCIDs)),
 	).Scan(&rows).Error
 	if err != nil {
-		return nil, fmt.Errorf("querying cell grid from daily summaries: %w", err)
+		return nil, fmt.Errorf("querying cell grid: %w", err)
 	}
 	return rows, nil
-}
-
-func earliest(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
-}
-
-func latest(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
 }
 
 func loadVariantCombinations(ctx context.Context, dbc *db.DB) (map[uint]variantCombo, error) {
