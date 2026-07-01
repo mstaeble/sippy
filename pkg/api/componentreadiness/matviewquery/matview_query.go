@@ -182,29 +182,27 @@ func SelectCRMatview(start, end time.Time) string {
 	}
 }
 
-// checkDateCoverage verifies that test_daily_summaries has data spanning
-// the requested date range for a release. Returns an error if coverage
-// is insufficient, signaling the caller to fall back to BigQuery.
-func checkDateCoverage(ctx context.Context, dbc *db.DB, release string, start, end time.Time) error {
-	var minDate, maxDate *time.Time
+// checkDateCoverage verifies that test_daily_summaries has data covering
+// the start of the requested date range for a release. We only check the
+// start date: if data exists from the requested start, we assume it is
+// contiguous through today (the loader appends data forward). Checking
+// the end date would cause false fallbacks when today's data hasn't been
+// loaded yet.
+func checkDateCoverage(ctx context.Context, dbc *db.DB, release string, start time.Time) error {
+	var minDate *time.Time
 	err := dbc.DB.WithContext(ctx).Raw(
-		"SELECT MIN(summary_date), MAX(summary_date) FROM test_daily_summaries WHERE release = ?",
-		release).Row().Scan(&minDate, &maxDate)
+		"SELECT MIN(summary_date) FROM test_daily_summaries WHERE release = ?",
+		release).Row().Scan(&minDate)
 	if err != nil {
 		return fmt.Errorf("checking date coverage for %s: %w", release, err)
 	}
-	if minDate == nil || maxDate == nil {
+	if minDate == nil {
 		return fmt.Errorf("no daily summary data for release %s", release)
 	}
 	startDate := start.Truncate(24 * time.Hour)
-	endDate := end.Truncate(24 * time.Hour)
 	if minDate.After(startDate) {
 		return fmt.Errorf("daily summary data for %s starts at %s, need %s",
 			release, minDate.Format("2006-01-02"), startDate.Format("2006-01-02"))
-	}
-	if maxDate.Before(endDate.Add(-24 * time.Hour)) {
-		return fmt.Errorf("daily summary data for %s ends at %s, need %s",
-			release, maxDate.Format("2006-01-02"), endDate.Format("2006-01-02"))
 	}
 	return nil
 }
@@ -220,16 +218,16 @@ func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.Reques
 	// use a separately loaded table.
 	var gaExists bool
 	dbc.DB.WithContext(ctx).Raw(
-		"SELECT EXISTS(SELECT 1 FROM prow_ga_test_statuses WHERE release = @release)",
+		"SELECT EXISTS(SELECT 1 FROM prow_ga_test_statuses_matview WHERE release = @release)",
 		sql.Named("release", opts.BaseRelease.Name)).Scan(&gaExists)
 
 	covG, covCtx := errgroup.WithContext(ctx)
 	covG.Go(func() error {
-		return checkDateCoverage(covCtx, dbc, opts.SampleRelease.Name, opts.SampleRelease.Start, opts.SampleRelease.End)
+		return checkDateCoverage(covCtx, dbc, opts.SampleRelease.Name, opts.SampleRelease.Start)
 	})
 	if !gaExists {
 		covG.Go(func() error {
-			return checkDateCoverage(covCtx, dbc, opts.BaseRelease.Name, opts.BaseRelease.Start, opts.BaseRelease.End)
+			return checkDateCoverage(covCtx, dbc, opts.BaseRelease.Name, opts.BaseRelease.Start)
 		})
 	}
 	if err := covG.Wait(); err != nil {
@@ -271,7 +269,7 @@ func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.Reques
 		End:     opts.BaseRelease.End,
 	}
 	if gaExists {
-		baseSource.Table = "prow_ga_test_statuses"
+		baseSource.Table = "prow_ga_test_statuses_matview"
 		fLog.WithField("release", opts.BaseRelease.Name).Info("using GA test status table for base data")
 	} else {
 		baseSource.Table = SelectCRMatview(opts.BaseRelease.Start, opts.BaseRelease.End)

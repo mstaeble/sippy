@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"cloud.google.com/go/bigquery"
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/stdlib"
 	"google.golang.org/api/iterator"
 
 	log "github.com/sirupsen/logrus"
-	"gorm.io/gorm"
 
 	bqcachedclient "github.com/openshift/sippy/pkg/bigquery"
 	"github.com/openshift/sippy/pkg/db"
@@ -18,7 +19,6 @@ import (
 
 const (
 	gaWindowDays = 30
-	batchSize    = 5000
 )
 
 // GATestStatusLoader populates prow_ga_test_statuses for releases that have reached GA.
@@ -36,15 +36,17 @@ type GATestStatusLoader struct {
 	dbc      *db.DB
 	bqClient *bqcachedclient.Client
 	force    bool
+	releases []string
 	errs     []error
 }
 
-func New(ctx context.Context, dbc *db.DB, bqClient *bqcachedclient.Client, force bool) *GATestStatusLoader {
+func New(ctx context.Context, dbc *db.DB, bqClient *bqcachedclient.Client, force bool, releases []string) *GATestStatusLoader {
 	return &GATestStatusLoader{
 		ctx:      ctx,
 		dbc:      dbc,
 		bqClient: bqClient,
 		force:    force,
+		releases: releases,
 	}
 }
 
@@ -77,10 +79,11 @@ func (l *GATestStatusLoader) Load() {
 
 func (l *GATestStatusLoader) gaReleases() ([]models.ReleaseDefinition, error) {
 	var defs []models.ReleaseDefinition
-	err := l.dbc.DB.WithContext(l.ctx).
-		Where("ga_date < NOW()").
-		Find(&defs).Error
-	if err != nil {
+	q := l.dbc.DB.WithContext(l.ctx).Where("ga_date < NOW()")
+	if len(l.releases) > 0 {
+		q = q.Where("release IN ?", l.releases)
+	}
+	if err := q.Find(&defs).Error; err != nil {
 		return nil, fmt.Errorf("querying release_definitions: %w", err)
 	}
 	return defs, nil
@@ -91,27 +94,19 @@ func (l *GATestStatusLoader) loadRelease(rel models.ReleaseDefinition) error {
 	gaEnd := rel.GADate.UTC().Truncate(24 * time.Hour)
 	gaStart := gaEnd.AddDate(0, 0, -gaWindowDays)
 
-	if err := l.ensureRawData(rLog, rel.Release, gaStart, gaEnd); err != nil {
-		return err
-	}
-
-	if err := l.aggregate(rel.Release, gaEnd); err != nil {
-		return fmt.Errorf("aggregating: %w", err)
-	}
-
-	return nil
+	return l.ensureRawData(rLog, rel.Release, gaStart, gaEnd)
 }
 
 // ensureRawData fetches from BigQuery and persists into prow_ga_raw_test_data if the
 // raw data is missing or the GA date has changed.
 func (l *GATestStatusLoader) ensureRawData(rLog *log.Entry, release string, gaStart, gaEnd time.Time) error {
 	if !l.force {
-		var existing models.ProwGATestStatus
+		var rd models.ReleaseDefinition
 		err := l.dbc.DB.WithContext(l.ctx).
-			Where("release = ? AND ga_date = ?", release, gaEnd).
-			First(&existing).Error
-		if err == nil {
-			rLog.Debug("ga-test-status: data exists with matching GA date, skipping fetch")
+			Where("release = ?", release).
+			First(&rd).Error
+		if err == nil && rd.GADataLoadedDate != nil && rd.GADataLoadedDate.Equal(gaEnd) {
+			rLog.Debug("ga-test-status: raw data exists with matching GA date, skipping fetch")
 			return nil
 		}
 	}
@@ -119,156 +114,118 @@ func (l *GATestStatusLoader) ensureRawData(rLog *log.Entry, release string, gaSt
 	rLog.WithField("window", fmt.Sprintf("%s to %s", gaStart.Format("2006-01-02"), gaEnd.Format("2006-01-02"))).
 		Info("ga-test-status: fetching from BigQuery")
 
-	rows, errCh := l.streamFromBigQuery(release, gaStart, gaEnd)
-
-	tx := l.dbc.DB.WithContext(l.ctx).Begin()
-	if tx.Error != nil {
-		return tx.Error
+	allRows, err := l.fetchFromBigQuery(release, gaStart, gaEnd)
+	if err != nil {
+		return fmt.Errorf("fetching from BigQuery: %w", err)
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
+	rLog.WithField("bq_rows", len(allRows)).Info("ga-test-status: fetched from BigQuery")
 
-	if err := tx.Where("release = ?", release).Delete(&models.ProwGARawTestDatum{}).Error; err != nil {
-		tx.Rollback()
+	if len(allRows) == 0 {
+		rLog.Warn("ga-test-status: BigQuery returned zero rows")
+		return nil
+	}
+
+	if err := l.dbc.DB.WithContext(l.ctx).Where("release = ?", release).Delete(&models.ProwGARawTestDatum{}).Error; err != nil {
 		return fmt.Errorf("deleting existing raw rows: %w", err)
 	}
 
-	rowCount, err := batchInsertRawRows(tx, rows, release)
+	rLog.WithField("rows", len(allRows)).Info("ga-test-status: inserting into database")
+	sqlDB, err := l.dbc.DB.DB()
 	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("inserting raw rows: %w", err)
+		return fmt.Errorf("getting sql.DB: %w", err)
 	}
-	if bqErr := <-errCh; bqErr != nil {
-		tx.Rollback()
-		return fmt.Errorf("streaming from BigQuery: %w", bqErr)
+	conn, err := stdlib.AcquireConn(sqlDB)
+	if err != nil {
+		return fmt.Errorf("acquiring pgx conn: %w", err)
 	}
-	if rowCount == 0 {
-		rLog.Warn("ga-test-status: BigQuery returned zero rows")
+	defer stdlib.ReleaseConn(sqlDB, conn)
+
+	copyRows := make([][]interface{}, len(allRows))
+	for i, r := range allRows {
+		copyRows[i] = []interface{}{release, r.TestName, r.JobName, r.Suite, r.Passes, r.Failures, r.Flakes, r.Runs}
 	}
 
-	if err := tx.Commit().Error; err != nil {
-		return err
+	n, err := conn.CopyFrom(l.ctx,
+		pgx.Identifier{"prow_ga_raw_test_data"},
+		[]string{"release", "test_name", "job_name", "suite", "passes", "failures", "flakes", "runs"},
+		pgx.CopyFromRows(copyRows),
+	)
+	if err != nil {
+		return fmt.Errorf("COPY into prow_ga_raw_test_data: %w", err)
 	}
 
-	rLog.WithField("bq_rows", rowCount).Info("ga-test-status: raw data persisted")
+	if err := l.dbc.DB.WithContext(l.ctx).
+		Model(&models.ReleaseDefinition{}).
+		Where("release = ?", release).
+		Update("ga_data_loaded_date", gaEnd).Error; err != nil {
+		return fmt.Errorf("recording load status: %w", err)
+	}
+
+	rLog.WithField("bq_rows", n).Info("ga-test-status: raw data persisted")
 	return nil
 }
 
-// aggregate re-derives prow_ga_test_statuses from prow_ga_raw_test_data by joining with
-// current dimension tables. This is cheap (PG-only) and runs every load cycle.
-func (l *GATestStatusLoader) aggregate(release string, gaDate time.Time) error {
-	tx := l.dbc.DB.WithContext(l.ctx).Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	if err := tx.Where("release = ?", release).Delete(&models.ProwGATestStatus{}).Error; err != nil {
-		tx.Rollback()
-		return fmt.Errorf("deleting existing aggregated rows: %w", err)
-	}
-
-	if err := tx.Exec(`
-		INSERT INTO prow_ga_test_statuses (test_id, suite_id, variant_combination_id, release, total_count, success_count, flake_count, ga_date)
-		SELECT
-			t.id,
-			COALESCE(s.id, 0),
-			pj.variant_combination_id,
-			?,
-			SUM(raw.runs)::int,
-			SUM(raw.passes + raw.flakes)::int,
-			SUM(raw.flakes)::int,
-			?
-		FROM prow_ga_raw_test_data raw
-		JOIN tests t ON t.name = raw.test_name
-		JOIN prow_jobs pj ON pj.name = raw.job_name AND pj.deleted_at IS NULL AND pj.variant_combination_id IS NOT NULL
-		LEFT JOIN suites s ON s.name = raw.suite_name
-		WHERE raw.release = ?
-		GROUP BY t.id, COALESCE(s.id, 0), pj.variant_combination_id
-	`, release, gaDate, release).Error; err != nil {
-		tx.Rollback()
-		return fmt.Errorf("aggregating from raw data: %w", err)
-	}
-
-	return tx.Commit().Error
-}
-
-// streamFromBigQuery executes the BQ query and sends rows on a channel.
-// A goroutine reads from BigQuery; any terminal error is sent on errCh
-// after the rows channel is closed.
-func (l *GATestStatusLoader) streamFromBigQuery(release string, from, to time.Time) (<-chan stagingRow, <-chan error) {
-	rows := make(chan stagingRow, 2*batchSize)
-	errCh := make(chan error, 1)
-
-	go func() {
-		defer close(rows)
-		defer close(errCh)
-
-		q := l.bqClient.BQ.Query(fmt.Sprintf(`
-			WITH deduped AS (
-				SELECT
-					junit.test_name,
-					jobs.prowjob_job_name AS job_name,
-					COALESCE(junit.testsuite, '') AS suite_name,
-					CASE WHEN junit.flake_count > 0 THEN 0 ELSE junit.success_val END AS adjusted_success,
-					CASE WHEN junit.flake_count > 0 THEN 1 ELSE 0 END AS is_flake,
-					ROW_NUMBER() OVER(
-						PARTITION BY junit.file_path, junit.test_name, junit.testsuite
-						ORDER BY CASE WHEN junit.flake_count > 0 THEN 0 WHEN junit.success_val > 0 THEN 1 ELSE 2 END
-					) AS row_num
-				FROM %[1]s.junit
-				JOIN %[1]s.jobs jobs ON junit.prowjob_build_id = jobs.prowjob_build_id
-				WHERE jobs.branch = @release
-					AND jobs.prowjob_start >= @from
-					AND jobs.prowjob_start < @to
-					AND junit.skipped = FALSE
-			)
+// fetchFromBigQuery executes the BQ query and collects all result rows into a slice.
+func (l *GATestStatusLoader) fetchFromBigQuery(release string, from, to time.Time) ([]stagingRow, error) {
+	q := l.bqClient.BQ.Query(fmt.Sprintf(`
+		WITH deduped AS (
 			SELECT
-				test_name,
-				job_name,
-				suite_name,
-				SUM(adjusted_success) AS passes,
-				SUM(CASE WHEN adjusted_success = 0 AND is_flake = 0 THEN 1 ELSE 0 END) AS failures,
-				SUM(is_flake) AS flakes,
-				COUNT(*) AS runs
-			FROM deduped
-			WHERE row_num = 1
-			GROUP BY test_name, job_name, suite_name
-		`, l.bqClient.Dataset))
-		q.Parameters = []bigquery.QueryParameter{
-			{Name: "release", Value: release},
-			{Name: "from", Value: from},
-			{Name: "to", Value: to},
-		}
+				junit.test_name,
+				jobs.prowjob_job_name AS job_name,
+				COALESCE(junit.testsuite, '') AS suite_name,
+				CASE WHEN junit.flake_count > 0 THEN 0 ELSE junit.success_val END AS adjusted_success,
+				CASE WHEN junit.flake_count > 0 THEN 1 ELSE 0 END AS is_flake,
+				ROW_NUMBER() OVER(
+					PARTITION BY junit.file_path, junit.test_name, junit.testsuite
+					ORDER BY CASE WHEN junit.flake_count > 0 THEN 0 WHEN junit.success_val > 0 THEN 1 ELSE 2 END
+				) AS row_num
+			FROM %[1]s.junit
+			JOIN %[1]s.jobs jobs ON junit.prowjob_build_id = jobs.prowjob_build_id
+			JOIN %[1]s.job_variants jv ON jobs.prowjob_job_name = jv.job_name
+				AND jv.variant_name = 'Release' AND jv.variant_value = @release
+			WHERE junit.modified_time >= DATETIME(@from)
+				AND junit.modified_time < DATETIME(@to)
+				AND junit.release = @release
+				AND jobs.prowjob_start >= DATETIME(@from)
+				AND jobs.prowjob_start < DATETIME(@to)
+				AND junit.skipped = FALSE
+		)
+		SELECT
+			test_name,
+			job_name,
+			suite_name,
+			SUM(adjusted_success) AS passes,
+			SUM(CASE WHEN adjusted_success = 0 AND is_flake = 0 THEN 1 ELSE 0 END) AS failures,
+			SUM(is_flake) AS flakes,
+			COUNT(*) AS runs
+		FROM deduped
+		WHERE row_num = 1
+		GROUP BY test_name, job_name, suite_name
+	`, l.bqClient.Dataset))
+	q.Parameters = []bigquery.QueryParameter{
+		{Name: "release", Value: release},
+		{Name: "from", Value: from},
+		{Name: "to", Value: to},
+	}
 
-		it, err := q.Read(l.ctx)
+	it, err := q.Read(l.ctx)
+	if err != nil {
+		return nil, fmt.Errorf("executing query: %w", err)
+	}
+
+	var result []stagingRow
+	for {
+		var r stagingRow
+		err := it.Next(&r)
+		if err == iterator.Done {
+			break
+		}
 		if err != nil {
-			errCh <- fmt.Errorf("executing query: %w", err)
-			return
+			return nil, fmt.Errorf("reading row: %w", err)
 		}
-
-		for {
-			var r stagingRow
-			err := it.Next(&r)
-			if err == iterator.Done {
-				return
-			}
-			if err != nil {
-				errCh <- fmt.Errorf("reading row: %w", err)
-				return
-			}
-			rows <- r
-		}
-	}()
-
-	return rows, errCh
+		result = append(result, r)
+	}
+	return result, nil
 }
 
 type stagingRow struct {
@@ -279,35 +236,4 @@ type stagingRow struct {
 	Failures int64  `bigquery:"failures"`
 	Flakes   int64  `bigquery:"flakes"`
 	Runs     int64  `bigquery:"runs"`
-}
-
-func batchInsertRawRows(tx *gorm.DB, rows <-chan stagingRow, release string) (int, error) {
-	batch := make([]models.ProwGARawTestDatum, 0, batchSize)
-	total := 0
-	for r := range rows {
-		batch = append(batch, models.ProwGARawTestDatum{
-			Release:  release,
-			TestName: r.TestName,
-			JobName:  r.JobName,
-			Suite:    r.Suite,
-			Passes:   r.Passes,
-			Failures: r.Failures,
-			Flakes:   r.Flakes,
-			Runs:     r.Runs,
-		})
-		if len(batch) >= batchSize {
-			if err := tx.Create(batch).Error; err != nil {
-				return total, fmt.Errorf("inserting batch at row %d: %w", total, err)
-			}
-			total += len(batch)
-			batch = batch[:0]
-		}
-	}
-	if len(batch) > 0 {
-		if err := tx.Create(batch).Error; err != nil {
-			return total, fmt.Errorf("inserting final batch at row %d: %w", total, err)
-		}
-		total += len(batch)
-	}
-	return total, nil
 }

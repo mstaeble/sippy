@@ -366,7 +366,7 @@ func NewLoadCommand() *cobra.Command {
 					if dbErr != nil {
 						return errors.Wrap(dbErr, "CRITICAL error getting postgres client which prevents ga-test-status loading")
 					}
-					loaders = append(loaders, gateststatus.New(ctx, dbc, bqc, f.ForceGARefresh))
+					loaders = append(loaders, gateststatus.New(ctx, dbc, bqc, f.ForceGARefresh, f.Releases))
 				}
 
 			}

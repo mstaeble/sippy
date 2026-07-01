@@ -113,6 +113,12 @@ var PostgresMatViews = []PostgresView{
 			"|||END|||":   "|||TIMENOW|||",
 		},
 	},
+	{
+		Name:         "prow_ga_test_statuses_matview",
+		Definition:   gaTestStatusMatView,
+		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
+		RefreshPhase: 1,
+	},
 }
 
 // PostgresViews are regular, non-materialized views:
@@ -527,4 +533,20 @@ FROM test_daily_summaries tds
 JOIN prow_jobs pj ON tds.prow_job_id = pj.id
 WHERE tds.summary_date >= |||START||| AND tds.summary_date < |||END|||
 GROUP BY tds.test_id, tds.suite_id, pj.variant_combination_id, tds.release
+`
+
+const gaTestStatusMatView = `
+SELECT
+    t.id AS test_id,
+    COALESCE(s.id, 0) AS suite_id,
+    pj.variant_combination_id,
+    raw.release,
+    SUM(raw.runs)::int AS total_count,
+    SUM(raw.passes + raw.flakes)::int AS success_count,
+    SUM(raw.flakes)::int AS flake_count
+FROM prow_ga_raw_test_data raw
+JOIN tests t ON t.name = raw.test_name
+JOIN prow_jobs pj ON pj.name = raw.job_name AND pj.deleted_at IS NULL AND pj.variant_combination_id IS NOT NULL
+LEFT JOIN suites s ON s.name = raw.suite
+GROUP BY t.id, COALESCE(s.id, 0), pj.variant_combination_id, raw.release
 `
