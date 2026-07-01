@@ -535,7 +535,8 @@ func BuildComponentReportQuery(
 	groupString := fmt.Sprintf(`
 					GROUP BY
 						%s
-						cm.id `, groupByVariants)
+						cm.id
+					HAVING COUNT(cm.id) > SUM(junit_data.adjusted_success_val)`, groupByVariants)
 
 	return queryString, groupString, commonParams
 }
