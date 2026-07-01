@@ -67,24 +67,25 @@ func loadAndCacheDimensions(ctx context.Context, dbc *db.DB) (map[uint]variantCo
 	return cachedVCMap, cachedOwnership, nil
 }
 
-// CandidateRow holds one row from the failure-only matview query.
-// Both sample and base counts are included for the same (test_id, suite_id, variant_combination_id).
+// CandidateRow holds one row from the dbGroupBy-aggregated candidate query.
+// Counts are already aggregated across variant combinations sharing the same
+// dbGroupBy key. The VariantKey is a comma-separated string of "Key:Value" pairs.
 type CandidateRow struct {
-	TestID               uint `gorm:"column:test_id"`
-	SuiteID              uint `gorm:"column:suite_id"`
-	VariantCombinationID uint `gorm:"column:variant_combination_id"`
-	SampleTotal          int  `gorm:"column:sample_total"`
-	SampleSuccess        int  `gorm:"column:sample_success"`
-	SampleFlake          int  `gorm:"column:sample_flake"`
-	BaseTotal            *int `gorm:"column:base_total"`
-	BaseSuccess          *int `gorm:"column:base_success"`
-	BaseFlake            *int `gorm:"column:base_flake"`
+	TestID        uint   `gorm:"column:test_id"`
+	SuiteID       uint   `gorm:"column:suite_id"`
+	VariantKey    string `gorm:"column:variant_key"`
+	SampleTotal   int    `gorm:"column:sample_total"`
+	SampleSuccess int    `gorm:"column:sample_success"`
+	SampleFlake   int    `gorm:"column:sample_flake"`
+	BaseTotal     *int   `gorm:"column:base_total"`
+	BaseSuccess   *int   `gorm:"column:base_success"`
+	BaseFlake     *int   `gorm:"column:base_flake"`
 }
 
-// CellGridRow identifies a (component, variant_combination_id) cell from the pre-computed grid.
+// CellGridRow identifies a (component, variant_key) cell from the pre-computed grid.
 type CellGridRow struct {
-	Component            string `gorm:"column:component"`
-	VariantCombinationID uint   `gorm:"column:variant_combination_id"`
+	Component  string `gorm:"column:component"`
+	VariantKey string `gorm:"column:variant_key"`
 }
 
 // QueryResult contains everything the report generator needs from the matview path.
@@ -180,11 +181,7 @@ func SelectCRMatview(start, end time.Time) string {
 }
 
 // checkDateCoverage verifies that test_daily_summaries has data covering
-// the start of the requested date range for a release. We only check the
-// start date: if data exists from the requested start, we assume it is
-// contiguous through today (the loader appends data forward). Checking
-// the end date would cause false fallbacks when today's data hasn't been
-// loaded yet.
+// the start of the requested date range for a release.
 func checkDateCoverage(ctx context.Context, dbc *db.DB, release string, start time.Time) error {
 	var minDate *time.Time
 	err := dbc.DB.WithContext(ctx).Raw(
@@ -204,15 +201,13 @@ func checkDateCoverage(ctx context.Context, dbc *db.DB, release string, start ti
 	return nil
 }
 
-// QueryMatviewTestStatus runs the failure-only matview query and performs
-// dbGroupBy aggregation and Fisher Exact Test in Go.
+// QueryMatviewTestStatus queries the matview (or daily summaries) for failure
+// candidates with dbGroupBy aggregation done in SQL, then applies Fisher
+// Exact Test in Go.
 func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.RequestOptions) (*QueryResult, error) {
 	before := time.Now()
 	fLog := log.WithField("func", "QueryMatviewTestStatus")
 
-	// Verify daily summary data covers the requested date ranges before
-	// committing to the PG path. GA base releases are exempt since they
-	// use a separately loaded table.
 	var gaExists bool
 	dbc.DB.WithContext(ctx).Raw(
 		"SELECT EXISTS(SELECT 1 FROM prow_ga_test_statuses_matview WHERE release = @release)",
@@ -241,17 +236,13 @@ func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.Reques
 		return &QueryResult{}, nil
 	}
 
-	vcMap, ownerships, err := getDimensionData(ctx, dbc)
+	_, ownerships, err := getDimensionData(ctx, dbc)
 	if err != nil {
 		return nil, err
 	}
 
 	dbGroupByKeys := opts.VariantOption.DBGroupBy.List()
-
-	vcidToDBGroup := make(map[uint]map[string]string, len(vcMap))
-	for _, vc := range vcMap {
-		vcidToDBGroup[vc.ID] = filterVariantsByKeys(vc.Variants, dbGroupByKeys)
-	}
+	sort.Strings(dbGroupByKeys)
 
 	sampleSource := crDataSource{
 		Table:   SelectCRMatview(opts.SampleRelease.Start, opts.SampleRelease.End),
@@ -282,12 +273,12 @@ func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.Reques
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		var err error
-		candidates, err = queryCandidates(gctx, dbc, sampleSource, baseSource, matchingVCIDs)
+		candidates, err = queryCandidates(gctx, dbc, sampleSource, baseSource, matchingVCIDs, dbGroupByKeys)
 		return err
 	})
 	g.Go(func() error {
 		var err error
-		gridRows, err = queryCellGrid(gctx, dbc, sampleSource, baseSource, matchingVCIDs)
+		gridRows, err = queryCellGrid(gctx, dbc, sampleSource, baseSource, matchingVCIDs, dbGroupByKeys)
 		return err
 	})
 	if err := g.Wait(); err != nil {
@@ -295,7 +286,7 @@ func QueryMatviewTestStatus(ctx context.Context, dbc *db.DB, opts reqopts.Reques
 	}
 	fLog.WithField("candidates", len(candidates)).Info("queried failure candidates")
 
-	result := aggregateAndAnalyze(candidates, gridRows, vcidToDBGroup, ownerships, dbGroupByKeys, opts)
+	result := analyzeAndBuild(candidates, gridRows, ownerships, opts)
 
 	fLog.WithField("base_status", len(result.BaseStatus)).
 		WithField("sample_status", len(result.SampleStatus)).
@@ -313,10 +304,61 @@ func sourceLabel(s crDataSource) string {
 	return fmt.Sprintf("daily_summaries[%s..%s]", s.Start.Format("2006-01-02"), s.End.Format("2006-01-02"))
 }
 
-// dailySummaryCTE returns a CTE clause and its named parameters for aggregating
-// test_daily_summaries over a date range. The CTE output matches the matview
-// schema: (test_id, suite_id, variant_combination_id, release, total_count, success_count, flake_count).
-func dailySummaryCTE(alias string, src crDataSource, matchingVCIDs []int) (string, map[string]interface{}) {
+// buildVCParsedCTE generates a CTE that parses variant_combinations.variants
+// into individual columns for the given dbGroupBy keys.
+func buildVCParsedCTE(dbGroupByKeys []string) string {
+	var cols []string
+	for _, k := range dbGroupByKeys {
+		cols = append(cols, fmt.Sprintf(
+			"MAX(CASE WHEN v LIKE '%s:%%' THEN split_part(v, ':', 2) END) AS %s",
+			k, quoteIdent(k)))
+	}
+	return fmt.Sprintf(`vc_parsed AS (
+		SELECT id, %s
+		FROM variant_combinations, unnest(variants) v
+		GROUP BY id
+	)`, strings.Join(cols, ", "))
+}
+
+func quoteIdent(s string) string {
+	return fmt.Sprintf(`"%s"`, s)
+}
+
+// variantKeyExpr generates a SQL expression that builds a comma-separated
+// variant key string from the dbGroupBy columns.
+func variantKeyExpr(prefix string, dbGroupByKeys []string) string {
+	var parts []string
+	for _, k := range dbGroupByKeys {
+		parts = append(parts, fmt.Sprintf("'%s:' || COALESCE(%s.%s, '')", k, prefix, quoteIdent(k)))
+	}
+	return "concat_ws(',', " + strings.Join(parts, ", ") + ")"
+}
+
+// dbGroupByColumns returns a comma-separated list of prefixed column references.
+func dbGroupByColumns(prefix string, dbGroupByKeys []string) string {
+	var cols []string
+	for _, k := range dbGroupByKeys {
+		cols = append(cols, prefix+"."+quoteIdent(k))
+	}
+	return strings.Join(cols, ", ")
+}
+
+// dbGroupByMatchClauses generates IS NOT DISTINCT FROM clauses for a LATERAL JOIN.
+func dbGroupByMatchClauses(leftPrefix, rightPrefix string, dbGroupByKeys []string) string {
+	var clauses []string
+	for _, k := range dbGroupByKeys {
+		clauses = append(clauses, fmt.Sprintf("%s.%s IS NOT DISTINCT FROM %s.%s",
+			leftPrefix, quoteIdent(k), rightPrefix, quoteIdent(k)))
+	}
+	return strings.Join(clauses, " AND ")
+}
+
+// sourceTableOrCTE returns the table/CTE name for the data source, adding a
+// daily summary CTE to ctes if needed. The returned ref can be used in FROM.
+func sourceTableOrCTE(alias string, src crDataSource, matchingVCIDs []int, ctes *[]string, params map[string]interface{}) string {
+	if !src.isDailySummary() {
+		return src.Table
+	}
 	startParam := alias + "_start"
 	endParam := alias + "_end"
 	releaseParam := alias + "_release"
@@ -336,71 +378,79 @@ func dailySummaryCTE(alias string, src crDataSource, matchingVCIDs []int) (strin
 		GROUP BY tds.test_id, tds.suite_id, pj.variant_combination_id, tds.release
 	)`, alias, releaseParam, startParam, endParam, vcidsParam)
 
-	params := map[string]interface{}{
-		startParam:   src.Start,
-		endParam:     src.End,
-		releaseParam: src.Release,
-		vcidsParam:   pq.Array(matchingVCIDs),
-	}
-	return cte, params
+	*ctes = append(*ctes, cte)
+	params[startParam] = src.Start
+	params[endParam] = src.End
+	params[releaseParam] = src.Release
+	params[vcidsParam] = pq.Array(matchingVCIDs)
+	return alias
 }
 
-func queryCandidates(ctx context.Context, dbc *db.DB, sample, base crDataSource, matchingVCIDs []int) ([]CandidateRow, error) {
+func queryCandidates(ctx context.Context, dbc *db.DB, sample, base crDataSource, matchingVCIDs []int, dbGroupByKeys []string) ([]CandidateRow, error) {
 	var ctes []string
 	params := map[string]interface{}{}
 
-	sampleRef := sample.Table
-	if sample.isDailySummary() {
-		cte, p := dailySummaryCTE("sample_data", sample, matchingVCIDs)
-		ctes = append(ctes, cte)
-		for k, v := range p {
-			params[k] = v
-		}
-		sampleRef = "sample_data"
-	} else {
+	ctes = append(ctes, buildVCParsedCTE(dbGroupByKeys))
+
+	sampleRef := sourceTableOrCTE("sample_data", sample, matchingVCIDs, &ctes, params)
+	baseRef := sourceTableOrCTE("base_data", base, matchingVCIDs, &ctes, params)
+
+	if !sample.isDailySummary() {
 		params["sample_release"] = sample.Release
 		params["matching_vcids"] = pq.Array(matchingVCIDs)
 	}
-
-	baseRef := base.Table
-	if base.isDailySummary() {
-		cte, p := dailySummaryCTE("base_data", base, matchingVCIDs)
-		ctes = append(ctes, cte)
-		for k, v := range p {
-			params[k] = v
-		}
-		baseRef = "base_data"
-	} else {
+	if !base.isDailySummary() {
 		params["base_release"] = base.Release
-	}
-
-	var withClause string
-	if len(ctes) > 0 {
-		withClause = "WITH " + strings.Join(ctes, ", ")
 	}
 
 	sampleFilter := ""
 	if !sample.isDailySummary() {
-		sampleFilter = "AND sf.release = @sample_release AND sf.variant_combination_id = ANY(@matching_vcids)"
+		sampleFilter = "AND mv.release = @sample_release AND mv.variant_combination_id = ANY(@matching_vcids)"
 	}
 
-	query := fmt.Sprintf(`%s
-		SELECT sf.test_id, sf.suite_id, sf.variant_combination_id,
-		       sf.total_count AS sample_total,
-		       sf.success_count AS sample_success,
-		       sf.flake_count AS sample_flake,
-		       b.total_count AS base_total,
-		       b.success_count AS base_success,
-		       b.flake_count AS base_flake
-		FROM %s sf
-		LEFT JOIN %s b
-		    ON b.test_id = sf.test_id
-		    AND b.suite_id = sf.suite_id
-		    AND b.variant_combination_id = sf.variant_combination_id
-		    AND b.release = @base_release
-		WHERE sf.total_count > sf.success_count
-		  %s
-	`, withClause, sampleRef, baseRef, sampleFilter)
+	baseFilter := ""
+	if !base.isDailySummary() {
+		baseFilter = "AND mv.release = @base_release"
+	}
+
+	dbCols := dbGroupByColumns("vp", dbGroupByKeys)
+	variantKey := variantKeyExpr("s", dbGroupByKeys)
+	matchClauses := dbGroupByMatchClauses("s", "vp2", dbGroupByKeys)
+
+	query := fmt.Sprintf(`WITH %s,
+		sample_agg AS (
+			SELECT mv.test_id, mv.suite_id, %s,
+				SUM(mv.total_count) AS total_count,
+				SUM(mv.success_count) AS success_count,
+				SUM(mv.flake_count) AS flake_count
+			FROM %s mv
+			JOIN vc_parsed vp ON mv.variant_combination_id = vp.id
+			WHERE TRUE %s
+			GROUP BY mv.test_id, mv.suite_id, %s
+			HAVING SUM(mv.total_count) > SUM(mv.success_count)
+		)
+		SELECT s.test_id, s.suite_id,
+			%s AS variant_key,
+			s.total_count AS sample_total,
+			s.success_count AS sample_success,
+			s.flake_count AS sample_flake,
+			b.base_total, b.base_success, b.base_flake
+		FROM sample_agg s
+		LEFT JOIN LATERAL (
+			SELECT SUM(mv.total_count)::int AS base_total,
+			       SUM(mv.success_count)::int AS base_success,
+			       SUM(mv.flake_count)::int AS base_flake
+			FROM %s mv
+			JOIN vc_parsed vp2 ON mv.variant_combination_id = vp2.id
+			WHERE mv.test_id = s.test_id AND mv.suite_id = s.suite_id
+			  AND %s
+			  %s
+		) b ON true`,
+		strings.Join(ctes, ", "),
+		dbCols,
+		sampleRef, sampleFilter, dbCols,
+		variantKey,
+		baseRef, matchClauses, baseFilter)
 
 	var namedArgs []interface{}
 	for k, v := range params {
@@ -414,15 +464,20 @@ func queryCandidates(ctx context.Context, dbc *db.DB, sample, base crDataSource,
 	return rows, nil
 }
 
-func queryCellGrid(ctx context.Context, dbc *db.DB, sample, base crDataSource, matchingVCIDs []int) ([]CellGridRow, error) {
+func queryCellGrid(ctx context.Context, dbc *db.DB, sample, base crDataSource, matchingVCIDs []int, dbGroupByKeys []string) ([]CellGridRow, error) {
+	vcParsedCTE := buildVCParsedCTE(dbGroupByKeys)
+	variantKey := variantKeyExpr("vp", dbGroupByKeys)
+
 	if !sample.isDailySummary() && !base.isDailySummary() {
 		var rows []CellGridRow
-		err := dbc.DB.WithContext(ctx).Raw(`
-			SELECT DISTINCT component, variant_combination_id
-			FROM cr_cell_grids
-			WHERE release IN (@base_release, @sample_release)
-			  AND variant_combination_id = ANY(@matching_vcids)
-		`,
+		err := dbc.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+			WITH %s
+			SELECT DISTINCT cg.component, %s AS variant_key
+			FROM cr_cell_grids cg
+			JOIN vc_parsed vp ON cg.variant_combination_id = vp.id
+			WHERE cg.release IN (@base_release, @sample_release)
+			  AND cg.variant_combination_id = ANY(@matching_vcids)
+		`, vcParsedCTE, variantKey),
 			sql.Named("base_release", base.Release),
 			sql.Named("sample_release", sample.Release),
 			sql.Named("matching_vcids", pq.Array(matchingVCIDs)),
@@ -433,12 +488,13 @@ func queryCellGrid(ctx context.Context, dbc *db.DB, sample, base crDataSource, m
 		return rows, nil
 	}
 
-	// For daily summary fallback, compute the cell grid dynamically.
 	var rows []CellGridRow
-	err := dbc.DB.WithContext(ctx).Raw(`
-		SELECT DISTINCT tow.component, pj.variant_combination_id
+	err := dbc.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+		WITH %s
+		SELECT DISTINCT tow.component, %s AS variant_key
 		FROM test_daily_summaries tds
 		JOIN prow_jobs pj ON tds.prow_job_id = pj.id
+		JOIN vc_parsed vp ON pj.variant_combination_id = vp.id
 		JOIN test_ownerships tow ON tow.test_id = tds.test_id
 		    AND (tow.suite_id = tds.suite_id OR (tow.suite_id IS NULL AND tds.suite_id = 0))
 		WHERE tds.release IN (@base_release, @sample_release)
@@ -446,7 +502,7 @@ func queryCellGrid(ctx context.Context, dbc *db.DB, sample, base crDataSource, m
 		  AND pj.variant_combination_id = ANY(@matching_vcids)
 		  AND tow.staff_approved_obsolete = false
 		  AND pj.variant_combination_id IS NOT NULL
-	`,
+	`, vcParsedCTE, variantKey),
 		sql.Named("base_release", base.Release),
 		sql.Named("sample_release", sample.Release),
 		sql.Named("start", earliest(sample.Start, base.Start)),
@@ -524,14 +580,14 @@ func loadTestOwnerships(ctx context.Context, dbc *db.DB) (map[ownershipKey]owner
 	return result, nil
 }
 
-func filterVariantsByKeys(variants map[string]string, keys []string) map[string]string {
-	filtered := make(map[string]string, len(keys))
-	for _, k := range keys {
-		if v, ok := variants[k]; ok {
-			filtered[k] = v
+func parseVariantKey(variantKey string) map[string]string {
+	result := make(map[string]string)
+	for _, pair := range strings.Split(variantKey, ",") {
+		if k, v, ok := strings.Cut(pair, ":"); ok {
+			result[k] = v
 		}
 	}
-	return filtered
+	return result
 }
 
 func variantMapToSortedSlice(m map[string]string) []string {
@@ -543,59 +599,15 @@ func variantMapToSortedSlice(m map[string]string) []string {
 	return result
 }
 
-type aggregationKey struct {
-	TestID    uint
-	SuiteID   uint
-	DBGroupBy string // JSON-serialized sorted variant map for map key
-}
-
-type aggregatedCounts struct {
-	SampleTotal   int
-	SampleSuccess int
-	SampleFlake   int
-	BaseTotal     int
-	BaseSuccess   int
-	BaseFlake     int
-}
-
-func aggregateAndAnalyze(
+// analyzeAndBuild applies Fisher Exact Test to the dbGroupBy-aggregated
+// candidates and builds the report status maps. No Go-side dbGroupBy
+// aggregation is needed since SQL already did it.
+func analyzeAndBuild(
 	candidates []CandidateRow,
 	gridRows []CellGridRow,
-	vcidToDBGroup map[uint]map[string]string,
 	ownerships map[ownershipKey]ownershipEntry,
-	dbGroupByKeys []string,
 	opts reqopts.RequestOptions,
 ) *QueryResult {
-	// Aggregate candidates by (test_id, suite_id, dbgroup)
-	agg := make(map[aggregationKey]*aggregatedCounts)
-	aggVariants := make(map[aggregationKey]map[string]string) // preserve variant map
-
-	for _, c := range candidates {
-		dbgroupVariants := vcidToDBGroup[c.VariantCombinationID]
-		key := aggregationKey{
-			TestID:    c.TestID,
-			SuiteID:   c.SuiteID,
-			DBGroupBy: fmt.Sprint(variantMapToSortedSlice(dbgroupVariants)),
-		}
-		if _, ok := aggVariants[key]; !ok {
-			aggVariants[key] = dbgroupVariants
-		}
-		existing, ok := agg[key]
-		if !ok {
-			existing = &aggregatedCounts{}
-			agg[key] = existing
-		}
-		existing.SampleTotal += c.SampleTotal
-		existing.SampleSuccess += c.SampleSuccess
-		existing.SampleFlake += c.SampleFlake
-		if c.BaseTotal != nil {
-			existing.BaseTotal += *c.BaseTotal
-			existing.BaseSuccess += *c.BaseSuccess
-			existing.BaseFlake += *c.BaseFlake
-		}
-	}
-
-	// Apply pre-filters and Fisher test, build status maps
 	minimumFailure := opts.AdvancedOption.MinimumFailure
 	pityFactor := float64(opts.AdvancedOption.PityFactor) / 100.0
 	confidence := opts.AdvancedOption.Confidence
@@ -603,30 +615,38 @@ func aggregateAndAnalyze(
 	baseStatus := make(map[string]crstatus.TestStatus)
 	sampleStatus := make(map[string]crstatus.TestStatus)
 
-	for key, counts := range agg {
-		owner := ownerships[ownershipKey{TestID: key.TestID, SuiteID: key.SuiteID}]
+	for _, c := range candidates {
+		owner := ownerships[ownershipKey{TestID: c.TestID, SuiteID: c.SuiteID}]
 		if owner.UniqueID == "" {
 			continue
 		}
-		variants := aggVariants[key]
+		variants := parseVariantKey(c.VariantKey)
 
-		sampleFailures := counts.SampleTotal - counts.SampleSuccess
+		sampleFailures := c.SampleTotal - c.SampleSuccess
 		if sampleFailures < minimumFailure {
 			continue
 		}
-		if counts.BaseTotal == 0 {
+		baseTotal := 0
+		baseSuccess := 0
+		baseFlake := 0
+		if c.BaseTotal != nil {
+			baseTotal = *c.BaseTotal
+			baseSuccess = *c.BaseSuccess
+			baseFlake = *c.BaseFlake
+		}
+		if baseTotal == 0 {
 			continue
 		}
 
-		basePassRate := float64(counts.BaseSuccess) / float64(counts.BaseTotal)
-		samplePassRate := float64(counts.SampleSuccess) / float64(counts.SampleTotal)
+		basePassRate := float64(baseSuccess) / float64(baseTotal)
+		samplePassRate := float64(c.SampleSuccess) / float64(c.SampleTotal)
 		if basePassRate-samplePassRate <= pityFactor {
 			continue
 		}
 
 		_, _, fisherP, _ := fischer.FisherExactTest(
-			counts.SampleTotal-counts.SampleSuccess, counts.SampleSuccess,
-			counts.BaseTotal-counts.BaseSuccess, counts.BaseSuccess,
+			c.SampleTotal-c.SampleSuccess, c.SampleSuccess,
+			baseTotal-baseSuccess, baseSuccess,
 		)
 		if fisherP >= 1.0-float64(confidence)/100.0 {
 			continue
@@ -644,9 +664,9 @@ func aggregateAndAnalyze(
 			Capabilities: owner.Capabilities,
 			Variants:     variantSlice,
 			Count: crtest.Count{
-				TotalCount:   counts.SampleTotal,
-				SuccessCount: counts.SampleSuccess,
-				FlakeCount:   counts.SampleFlake,
+				TotalCount:   c.SampleTotal,
+				SuccessCount: c.SampleSuccess,
+				FlakeCount:   c.SampleFlake,
 			},
 		}
 		baseStatus[keyStr] = crstatus.TestStatus{
@@ -654,26 +674,23 @@ func aggregateAndAnalyze(
 			Capabilities: owner.Capabilities,
 			Variants:     variantSlice,
 			Count: crtest.Count{
-				TotalCount:   counts.BaseTotal,
-				SuccessCount: counts.BaseSuccess,
-				FlakeCount:   counts.BaseFlake,
+				TotalCount:   baseTotal,
+				SuccessCount: baseSuccess,
+				FlakeCount:   baseFlake,
 			},
 		}
 	}
 
-	// Build cell grid
 	seen := make(map[string]bool)
 	var cellGrid []CellGridEntry
 	for _, g := range gridRows {
-		dbgroupVariants := vcidToDBGroup[g.VariantCombinationID]
-		cellKey := g.Component + "|" + fmt.Sprint(variantMapToSortedSlice(dbgroupVariants))
-		if seen[cellKey] {
+		if seen[g.Component+"|"+g.VariantKey] {
 			continue
 		}
-		seen[cellKey] = true
+		seen[g.Component+"|"+g.VariantKey] = true
 		cellGrid = append(cellGrid, CellGridEntry{
 			Component: g.Component,
-			Variants:  dbgroupVariants,
+			Variants:  parseVariantKey(g.VariantKey),
 		})
 	}
 
