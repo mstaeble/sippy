@@ -3,7 +3,8 @@ package releasefallback
 import (
 	"encoding/json"
 	"testing"
-	"time"
+
+	"cloud.google.com/go/civil"
 
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crstatus"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crtest"
@@ -47,37 +48,26 @@ func Test_PreAnalysis(t *testing.T) {
 	}
 
 	// 4.19 will be our assumed requested base release, which may trigger fallback to 4.18 or 4.17 in these tests
-	start419 := time.Date(2025, 3, 2, 0, 0, 0, 0, time.UTC)
-	end419 := time.Date(2025, 4, 30, 0, 0, 0, 0, time.UTC)
-	release419 := crtest.ReleaseTimeRange{
-		Release: "4.19",
-		Start:   &start419,
-		End:     &end419,
-	}
+	start419 := civil.Date{Year: 2025, Month: 3, Day: 2}
+	end419 := civil.Date{Year: 2025, Month: 4, Day: 30}
 
-	start418 := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
-	end418 := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
-	release418 := crtest.ReleaseTimeRange{
+	start418 := civil.Date{Year: 2025, Month: 2, Day: 1}
+	end418 := civil.Date{Year: 2025, Month: 3, Day: 1}
+	fallbackMap418 := ReleaseTestMap{
 		Release: "4.18",
 		Start:   &start418,
 		End:     &end418,
-	}
-	fallbackMap418 := ReleaseTestMap{
-		ReleaseTimeRange: release418,
 		Tests: map[string]crstatus.TestStatus{
 			test1KeyStr: buildTestStatus("test1", test1VariantsFlattened, 100, 95, 0),
 		},
 	}
 
-	start417 := time.Date(2024, 12, 1, 0, 0, 0, 0, time.UTC)
-	end417 := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
-	release417 := crtest.ReleaseTimeRange{
+	start417 := civil.Date{Year: 2024, Month: 12, Day: 1}
+	end417 := civil.Date{Year: 2024, Month: 12, Day: 31}
+	fallbackMap417 := ReleaseTestMap{
 		Release: "4.17",
 		Start:   &start417,
 		End:     &end417,
-	}
-	fallbackMap417 := ReleaseTestMap{
-		ReleaseTimeRange: release417,
 		Tests: map[string]crstatus.TestStatus{
 			test1KeyStr: buildTestStatus("test1", test1VariantsFlattened, 100, 98, 0),
 		},
@@ -106,8 +96,8 @@ func Test_PreAnalysis(t *testing.T) {
 					fallbackMap418.Release: fallbackMap418,
 				},
 			},
-			testStats:      buildTestStats(100, 93, release419, nil),
-			expectedStatus: buildTestStats(100, 95, release418, []string{"Overrode base stats (0.9300) using release 4.18 (0.9500)"}),
+			testStats:      buildTestStats(100, 93, "4.19", &start419, &end419, nil),
+			expectedStatus: buildTestStats(100, 95, "4.18", &start418, &end418, []string{"Overrode base stats (0.9300) using release 4.18 (0.9500)"}),
 		},
 		{
 			name:    "fallback twice to prior release",
@@ -119,8 +109,8 @@ func Test_PreAnalysis(t *testing.T) {
 					fallbackMap417.Release: fallbackMap417, // 4.17 improves even further
 				},
 			},
-			testStats:      buildTestStats(100, 93, release419, nil),
-			expectedStatus: buildTestStats(100, 98, release417, []string{"Overrode base stats (0.9500) using release 4.17 (0.9800)"}),
+			testStats:      buildTestStats(100, 93, "4.19", &start419, &end419, nil),
+			expectedStatus: buildTestStats(100, 98, "4.17", &start417, &end417, []string{"Overrode base stats (0.9500) using release 4.17 (0.9800)"}),
 		},
 		{
 			name:    "fallback once to two releases ago",
@@ -132,8 +122,8 @@ func Test_PreAnalysis(t *testing.T) {
 					fallbackMap417.Release: fallbackMap417, // 4.17 improves even further
 				},
 			},
-			testStats:      buildTestStats(100, 97, release419, nil),
-			expectedStatus: buildTestStats(100, 98, release417, []string{"Overrode base stats (0.9700) using release 4.17 (0.9800)"}),
+			testStats:      buildTestStats(100, 97, "4.19", &start419, &end419, nil),
+			expectedStatus: buildTestStats(100, 98, "4.17", &start417, &end417, []string{"Overrode base stats (0.9700) using release 4.17 (0.9800)"}),
 		},
 		{
 			name:    "don't fallback to prior release",
@@ -144,8 +134,8 @@ func Test_PreAnalysis(t *testing.T) {
 					fallbackMap418.Release: fallbackMap418,
 				},
 			},
-			testStats:      buildTestStats(100, 100, release419, nil),
-			expectedStatus: buildTestStats(100, 100, release419, nil),
+			testStats:      buildTestStats(100, 100, "4.19", &start419, &end419, nil),
+			expectedStatus: buildTestStats(100, 100, "4.19", &start419, &end419, nil),
 		},
 		{
 			name:    "don't fallback to prior release with insufficient runs",
@@ -157,14 +147,14 @@ func Test_PreAnalysis(t *testing.T) {
 					fallbackMap417.Release: fallbackMap417,
 				},
 			},
-			testStats: buildTestStats(10000, 9700, release419, nil),
+			testStats: buildTestStats(10000, 9700, "4.19", &start419, &end419, nil),
 			// No fallback release had at least 60% of our run count
-			expectedStatus: buildTestStats(10000, 9700, release419, nil),
+			expectedStatus: buildTestStats(10000, 9700, "4.19", &start419, &end419, nil),
 		},
 	}
 	for i, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			rfb := NewReleaseFallbackMiddleware(nil, test.reqOpts, releaseConfigs)
+			rfb := NewReleaseFallbackMiddleware(nil, nil, test.reqOpts, releaseConfigs)
 			rfb.cachedFallbackTestStatuses = &tests[i].fallbackReleases
 			err := rfb.PreAnalysis(test.testKey, test.testStats)
 			assert.NoError(t, err)
@@ -173,53 +163,27 @@ func Test_PreAnalysis(t *testing.T) {
 	}
 }
 func TestCalculateFallbackReleases(t *testing.T) {
-	start419 := time.Date(2025, 3, 2, 0, 0, 0, 0, time.UTC)
-	end419 := time.Date(2025, 4, 30, 0, 0, 0, 0, time.UTC)
-	release419 := crtest.ReleaseTimeRange{
-		Release: "4.19",
-		Start:   &start419,
-		End:     &end419,
-	}
+	ga419 := civil.Date{Year: 2025, Month: 4, Day: 30}
+	ga418 := civil.Date{Year: 2025, Month: 3, Day: 1}
+	ga417 := civil.Date{Year: 2024, Month: 12, Day: 31}
+	ga416 := civil.Date{Year: 2024, Month: 6, Day: 30}
 
-	start418 := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
-	end418 := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
-	release418 := crtest.ReleaseTimeRange{
-		Release: "4.18",
-		Start:   &start418,
-		End:     &end418,
-	}
-
-	start417 := time.Date(2024, 12, 1, 0, 0, 0, 0, time.UTC)
-	end417 := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
-	release417 := crtest.ReleaseTimeRange{
-		Release: "4.17",
-		Start:   &start417,
-		End:     &end417,
-	}
-
-	start416 := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-	end416 := time.Date(2024, 6, 30, 0, 0, 0, 0, time.UTC)
-	release416 := crtest.ReleaseTimeRange{
-		Release: "4.16",
-		Start:   &start416,
-		End:     &end416,
-	}
-
-	allTimeRanges := []crtest.ReleaseTimeRange{release419, release418, release417, release416}
-	expectedTimeRanges := []crtest.ReleaseTimeRange{release419, release418, release417}
 	releaseConfigs := []v1.Release{
 		{Release: "4.20", PreviousRelease: "4.19"},
-		{Release: "4.19", PreviousRelease: "4.18"},
-		{Release: "4.18", PreviousRelease: "4.17"},
-		{Release: "4.17", PreviousRelease: "4.16"},
-		{Release: "4.16", PreviousRelease: ""},
+		{Release: "4.19", PreviousRelease: "4.18", GADate: &ga419},
+		{Release: "4.18", PreviousRelease: "4.17", GADate: &ga418},
+		{Release: "4.17", PreviousRelease: "4.16", GADate: &ga417},
+		{Release: "4.16", PreviousRelease: "", GADate: &ga416},
 	}
 
-	fallbackReleases := calculateFallbackReleases("4.20", allTimeRanges, releaseConfigs, 3)
-	for i := range expectedTimeRanges {
-		assert.Equal(t, expectedTimeRanges[i].Release, fallbackReleases[i].Release)
-		assert.Equal(t, expectedTimeRanges[i].Start, fallbackReleases[i].Start)
-		assert.Equal(t, expectedTimeRanges[i].End, fallbackReleases[i].End)
+	result := calculateFallbackReleases("4.20", releaseConfigs, 3)
+	expectedReleases := []string{"4.19", "4.18", "4.17"}
+	expectedGADates := []*civil.Date{&ga419, &ga418, &ga417}
+
+	assert.Equal(t, len(expectedReleases), len(result))
+	for i := range expectedReleases {
+		assert.Equal(t, expectedReleases[i], result[i].release)
+		assert.Equal(t, expectedGADates[i], result[i].gaDate)
 	}
 }
 
@@ -239,13 +203,14 @@ func buildTestStatus(testName string, variants []string, total, success, flake i
 	}
 }
 
-func buildTestStats(total, success int, baseRelease crtest.ReleaseTimeRange, explanations []string) *testdetails.TestComparison {
+func buildTestStats(total, success int, release string, start, end *civil.Date, explanations []string) *testdetails.TestComparison {
 	fails := total - success
+
 	ts := &testdetails.TestComparison{
 		BaseStats: &testdetails.ReleaseStats{
-			Release: baseRelease.Release,
-			Start:   baseRelease.Start,
-			End:     baseRelease.End,
+			Release: release,
+			Start:   start,
+			End:     end,
 			Stats: crtest.Stats{
 				FailureCount: fails,
 				SuccessCount: success,

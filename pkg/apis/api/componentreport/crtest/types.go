@@ -2,7 +2,6 @@ package crtest
 
 import (
 	"encoding/json"
-	"time"
 )
 
 // These are foundational types for tests, built only from basic golang types.
@@ -104,10 +103,4 @@ func (t KeyWithVariants) KeyOrDie() string {
 		panic(err)
 	}
 	return string(testIDBytes)
-}
-
-type ReleaseTimeRange struct {
-	Release string
-	End     *time.Time
-	Start   *time.Time
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/civil"
 	"github.com/andygrunwald/go-jira"
 	"github.com/openshift/sippy/pkg/api/componentreadiness"
 	"github.com/openshift/sippy/pkg/api/componentreadiness/dataprovider"
@@ -114,12 +115,12 @@ func NewJiraAutomator(
 }
 
 func (j JiraAutomator) getRequestOptionForView(view crview.View) (reqopts.RequestOptions, error) {
-	baseRelease, err := utils.GetViewReleaseOptions(j.releases, "basis", view.BaseRelease, 0, 0)
+	baseRelease, err := utils.GetViewReleaseOptions(j.releases, "basis", view.BaseRelease)
 	if err != nil {
 		return reqopts.RequestOptions{}, err
 	}
 
-	sampleRelease, err := utils.GetViewReleaseOptions(j.releases, "sample", view.SampleRelease, j.cacheOptions.CRTimeRoundingFactor, j.cacheOptions.CRTimeRoundingOffset)
+	sampleRelease, err := utils.GetViewReleaseOptions(j.releases, "sample", view.SampleRelease)
 	if err != nil {
 		return reqopts.RequestOptions{}, err
 	}
@@ -271,13 +272,13 @@ func (j JiraAutomator) getComponentReadinessURLsForView(view crview.View) (strin
 
 	if reportOpts.BaseRelease.Name != "" {
 		values.Add("baseRelease", reportOpts.BaseRelease.Name)
-		values.Add("baseStartTime", reportOpts.BaseRelease.Start.UTC().Format(time.RFC3339))
-		values.Add("baseEndTime", reportOpts.BaseRelease.End.UTC().Format(time.RFC3339))
+		values.Add("baseStartDate", reportOpts.BaseRelease.Start.String())
+		values.Add("baseEndDate", reportOpts.BaseRelease.End.String())
 	}
 	if reportOpts.SampleRelease.Name != "" {
 		values.Add("sampleRelease", reportOpts.SampleRelease.Name)
-		values.Add("sampleStartTime", reportOpts.SampleRelease.Start.UTC().Format(time.RFC3339))
-		values.Add("sampleEndTime", reportOpts.SampleRelease.End.UTC().Format(time.RFC3339))
+		values.Add("sampleStartDate", reportOpts.SampleRelease.Start.String())
+		values.Add("sampleEndDate", reportOpts.SampleRelease.End.String())
 	}
 	values.Add("columnGroupBy", strings.Join(reportOpts.VariantOption.ColumnGroupBy.List(), ","))
 	for name, variants := range reportOpts.VariantOption.IncludeVariants {
@@ -377,7 +378,7 @@ func (j JiraAutomator) updateJiraIssueForRegressions(issue jira.Issue, view crvi
 	case jiratype.StatusOnQA, jiratype.StatusVerified, jiratype.StatusClosed:
 		// QA/Verified/Closed
 		resolutionDate := time.Time(issue.Fields.Resolutiondate)
-		if view.SampleRelease.Start.After(resolutionDate) {
+		if view.SampleRelease.Start.After(civil.DateOf(resolutionDate)) {
 			// Existing issue does not cover current regression
 			err := j.createNewJiraIssueForRegressions(view, component, tests, nil)
 			if err != nil {
@@ -391,8 +392,10 @@ func (j JiraAutomator) updateJiraIssueForRegressions(issue jira.Issue, view crvi
 			//    do this after a reasonable number of days has passed.
 			scopeView := view
 			scopeView.TestIDOption.Component = component.Component
-			scopeView.SampleRelease.RelativeStart = resolutionDate.Add(-14 * time.Hour * 24).Format(time.RFC3339)
-			scopeView.SampleRelease.RelativeEnd = resolutionDate.Format(time.RFC3339)
+			scopeStart := civil.DateOf(resolutionDate).AddDays(-14)
+			scopeEnd := civil.DateOf(resolutionDate)
+			scopeView.SampleRelease.Start = scopeStart
+			scopeView.SampleRelease.End = scopeEnd
 			scopeReport, err := j.getComponentReportForView(scopeView)
 			if err != nil {
 				return err
@@ -433,11 +436,11 @@ func (j JiraAutomator) updateJiraIssueForRegressions(issue jira.Issue, view crvi
 				if err != nil {
 					return err
 				}
-			} else if resolutionDate.Add(fixCheckWaitPeriod).Before(view.SampleRelease.End) {
+			} else if civil.DateOf(resolutionDate.Add(fixCheckWaitPeriod)).Before(view.SampleRelease.End) {
 				// This means scope report contains all tests from current report, verify fix
 				fixView := view
 				fixView.TestIDOption.Component = component.Component
-				fixView.SampleRelease.RelativeStart = resolutionDate.Format(time.RFC3339)
+				fixView.SampleRelease.Start = civil.DateOf(resolutionDate)
 				fixReport, err := j.getComponentReportForView(fixView)
 				if err != nil {
 					return err

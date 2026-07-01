@@ -83,8 +83,7 @@ func (b *baseQueryGenerator) QueryTestStatus(ctx context.Context) (crstatus.Repo
 	commonQuery, groupByQuery, queryParameters := BuildComponentReportQuery(b.client, b.ReqOptions, b.allVariants, b.ReqOptions.VariantOption.IncludeVariants, DefaultJunitTable, false, b.ReqOptions.BaseRelease.Name)
 
 	errs := []error{}
-	baseString := commonQuery + ` AND jv_Release.variant_value = @BaseRelease`
-	baseQuery := b.client.Query(ctx, bqlabel.CRJunitBase, baseString+groupByQuery)
+	baseQuery := b.client.Query(ctx, bqlabel.CRJunitBase, commonQuery+groupByQuery)
 
 	baseQuery.Parameters = append(baseQuery.Parameters, queryParameters...)
 	baseQuery.Parameters = append(baseQuery.Parameters, []bigquery.QueryParameter{
@@ -117,8 +116,8 @@ type sampleQueryGenerator struct {
 	ReqOptions      reqopts.RequestOptions
 	IncludeVariants map[string][]string
 
-	Start time.Time
-	End   time.Time
+	Start civil.Date
+	End   civil.Date
 }
 
 func NewSampleQueryGenerator(
@@ -126,7 +125,7 @@ func NewSampleQueryGenerator(
 	reqOptions reqopts.RequestOptions,
 	allVariants crtest.JobVariants,
 	includeVariants map[string][]string,
-	start, end time.Time) sampleQueryGenerator {
+	start, end civil.Date) sampleQueryGenerator {
 
 	generator := sampleQueryGenerator{
 		ReqOptions:      reqOptions,
@@ -148,10 +147,6 @@ func (s *sampleQueryGenerator) QueryTestStatus(ctx context.Context) (crstatus.Re
 
 	errs := []error{}
 	sampleString := commonQuery
-	// Only set sample release when PR and payload options are not set
-	if s.ReqOptions.SampleRelease.PullRequestOptions == nil && s.ReqOptions.SampleRelease.PayloadOptions == nil {
-		sampleString += ` AND jv_Release.variant_value = @SampleRelease`
-	}
 	if s.ReqOptions.SampleRelease.PullRequestOptions != nil {
 		sampleString += `  AND org = @Org AND repo = @Repo AND pr_number = @PRNumber`
 	}
@@ -397,51 +392,156 @@ func BuildComponentReportQuery(
 	isSample bool,
 	releaseFilter string,
 ) (string, string, []bigquery.QueryParameter) {
-	// Parts of the query, including the columns returned, are dynamic, based on the list of variants we're told to work with.
-	// Variants will be returned as columns with names like: variant_[VariantName]
-	// See FetchTestStatusResults for where we dynamically handle these columns.
-	selectVariants := ""
-	joinVariants := ""
-	groupByVariants := ""
-	for _, v := range sortedKeys(allJobVariants.Variants) {
-		joinVariants += fmt.Sprintf("LEFT JOIN %s.job_variants jv_%s ON junit_data.variant_registry_job_name = jv_%s.job_name AND jv_%s.variant_name = '%s'\n",
-			client.Dataset, v, v, v, v)
-	}
-	for _, v := range reqOptions.VariantOption.DBGroupBy.List() {
-		v = param.Cleanse(v)
-		selectVariants += fmt.Sprintf("jv_%s.variant_value AS variant_%s,\n", v, v) // Note: Variants are camelcase, so the query columns come back like: variant_Architecture
-		groupByVariants += fmt.Sprintf("jv_%s.variant_value,\n", v)
-	}
-
 	jobNameQueryPortion := normalJobNameCol
 	if reqOptions.SampleRelease.PullRequestOptions != nil && isSample {
 		jobNameQueryPortion = pullRequestDynamicJobNameCol
 	}
 
-	// WARNING: returning additional columns from this query will require explicit parsing in deserializeRowToTestStatus
-	// TODO: last_failure here explicitly uses success_val not adjusted_success_val, this ensures we
-	// show the last time the test failed, not flaked. if you enable the flakes as failures feature (which is
-	// non default today), the last failure time will be wrong which can impact things like failed fix detection.
 	withClause, commonParams := buildCRQueryCTEs(client.Dataset, junitTable, jobNameQueryPortion, jobRunAnnotationToIgnore, releaseFilter, reqOptions.AdvancedOption.KeyTestNames)
+
+	// Build a single CTE that maps job_name to a variant combination key,
+	// replacing the previous N LEFT JOINs to job_variants (one per variant key).
+	// The CTE aggregates dbGroupBy variant values into a comma-separated string
+	// and filters by include_variants using HAVING conditions.
+	// For cross-compare views (e.g. x86-vs-arm), merge CompareVariants into
+	// includeVariants for the sample side so the HAVING filter accepts the
+	// cross-compared variant values (e.g. Architecture:[arm64,multi]).
+	variantGroups := includeVariants
+	if isSample && len(reqOptions.VariantOption.VariantCrossCompare) > 0 {
+		variantGroups = make(map[string][]string)
+		for k, v := range includeVariants {
+			variantGroups[k] = v
+		}
+		for k, v := range reqOptions.VariantOption.CompareVariants {
+			variantGroups[k] = v
+		}
+	}
+	if variantGroups == nil { // view definitions may omit a variants map
+		variantGroups = map[string][]string{}
+	}
+
+	// Collect all variant keys we need: dbGroupBy (for grouping) + includeVariants (for filtering)
+	neededKeys := map[string]bool{}
+	for _, v := range reqOptions.VariantOption.DBGroupBy.List() {
+		neededKeys[param.Cleanse(v)] = true
+	}
+	for k := range variantGroups {
+		neededKeys[param.Cleanse(k)] = true
+	}
+	if len(reqOptions.TestIDOptions) == 1 {
+		for k := range reqOptions.TestIDOptions[0].RequestedVariants {
+			neededKeys[param.Cleanse(k)] = true
+		}
+	}
+
+	var neededKeysList []string
+	for k := range neededKeys {
+		neededKeysList = append(neededKeysList, k)
+	}
+	sort.Strings(neededKeysList)
+
+	quotedKeys := make([]string, len(neededKeysList))
+	for i, k := range neededKeysList {
+		quotedKeys[i] = fmt.Sprintf("'%s'", k)
+	}
+
+	var havingClauses []string
+	for _, group := range sortedKeys(variantGroups) {
+		group = param.Cleanse(group)
+		paramName := fmt.Sprintf("variantGroup_%s", group)
+		havingClauses = append(havingClauses,
+			fmt.Sprintf("COUNTIF(variant_name = '%s' AND variant_value IN UNNEST(@%s)) > 0", group, paramName))
+		commonParams = append(commonParams, bigquery.QueryParameter{
+			Name:  paramName,
+			Value: variantGroups[group],
+		})
+	}
+	if len(reqOptions.TestIDOptions) == 1 {
+		for _, group := range sortedKeys(reqOptions.TestIDOptions[0].RequestedVariants) {
+			group = param.Cleanse(group)
+			paramName := fmt.Sprintf("ReqVariant_%s", group)
+			havingClauses = append(havingClauses,
+				fmt.Sprintf("COUNTIF(variant_name = '%s' AND variant_value = @%s) > 0", group, paramName))
+			commonParams = append(commonParams, bigquery.QueryParameter{
+				Name:  paramName,
+				Value: reqOptions.TestIDOptions[0].RequestedVariants[group],
+			})
+		}
+	}
+
+	havingStr := ""
+	if len(havingClauses) > 0 {
+		havingStr = "HAVING " + strings.Join(havingClauses, " AND ")
+	}
+
+	// Build the dbGroupBy variant key: a sorted comma-separated string of "Key:Value" pairs.
+	// Only dbGroupBy keys appear in the key (not all variant keys).
+	// Cross-compare keys are excluded so sample and base produce matching keys,
+	// enabling Fisher Exact Test comparison across the cross-compared dimension.
+	var dbGroupByKeysQuoted []string
+	crossCompareSet := map[string]bool{}
+	for _, k := range reqOptions.VariantOption.VariantCrossCompare {
+		crossCompareSet[k] = true
+	}
+	for _, v := range reqOptions.VariantOption.DBGroupBy.List() {
+		if crossCompareSet[v] {
+			continue
+		}
+		dbGroupByKeysQuoted = append(dbGroupByKeysQuoted, fmt.Sprintf("'%s'", param.Cleanse(v)))
+	}
+	dbGroupByFilter := ""
+	if len(dbGroupByKeysQuoted) > 0 {
+		dbGroupByFilter = fmt.Sprintf("AND variant_name IN (%s)", strings.Join(dbGroupByKeysQuoted, ", "))
+	}
+
+	variantComboCTE := fmt.Sprintf(`,
+		job_variant_combos AS (
+			SELECT
+				job_name,
+				STRING_AGG(
+					CONCAT(variant_name, ':', variant_value),
+					',' ORDER BY variant_name
+				) AS variant_key
+			FROM %s.job_variants
+			WHERE variant_name IN (%s)
+			GROUP BY job_name
+			%s
+		),
+		job_dbgroup_keys AS (
+			SELECT
+				job_name,
+				STRING_AGG(
+					CONCAT(variant_name, ':', variant_value),
+					',' ORDER BY variant_name
+				) AS variant_key
+			FROM %s.job_variants
+			WHERE TRUE %s
+			GROUP BY job_name
+		)`,
+		client.Dataset, strings.Join(quotedKeys, ", "), havingStr,
+		client.Dataset, dbGroupByFilter)
+
+	withClause += variantComboCTE
 
 	queryString := fmt.Sprintf(`%s
 					SELECT
 						ANY_VALUE(junit_data.test_name HAVING MAX junit_data.prowjob_start) AS test_name,
 						ANY_VALUE(junit_data.testsuite HAVING MAX junit_data.prowjob_start) AS test_suite,
 						cm.id as test_id,
-						%s
+						jdk.variant_key,
 						COUNT(cm.id) AS total_count,
 						SUM(junit_data.adjusted_success_val) AS success_count,
 						SUM(junit_data.adjusted_flake_count) AS flake_count,
+						-- TODO: uses success_val not adjusted_success_val so flake-as-failure mode shows wrong last failure time
 						MAX(CASE WHEN junit_data.success_val = 0 THEN junit_data.prowjob_start ELSE NULL END) AS last_failure,
 						ANY_VALUE(cm.component) AS component,
 						ANY_VALUE(cm.capabilities) AS capabilities,
 					FROM deduped_testcases AS junit_data
 					INNER JOIN latest_component_mapping cm ON junit_data.testsuite = cm.suite AND junit_data.test_name = cm.name
+					INNER JOIN job_variant_combos jvc ON junit_data.variant_registry_job_name = jvc.job_name
+					INNER JOIN job_dbgroup_keys jdk ON junit_data.variant_registry_job_name = jdk.job_name
 `,
-		withClause, selectVariants)
-
-	queryString += joinVariants
+		withClause)
 
 	queryString += `WHERE cm.staff_approved_obsolete = false
 						AND (junit_data.variant_registry_job_name LIKE 'periodic-%%' OR junit_data.variant_registry_job_name LIKE 'release-%%' OR junit_data.variant_registry_job_name LIKE 'aggregator-%%')`
@@ -453,37 +553,8 @@ func BuildComponentReportQuery(
 		queryString += ` AND NOT 'Disruption' in UNNEST(capabilities)`
 	}
 
-	variantGroups := includeVariants
-	// potentially cross-compare variants for the sample
-	if isSample && len(reqOptions.VariantOption.VariantCrossCompare) > 0 {
-		// Merge CompareVariants into includeVariants (don't replace entirely)
-		// CompareVariants contains the cross-compared variant values (e.g., Topology:[single])
-		// includeVariants contains all other variant filters (e.g., JobTier, ContainerRuntime, etc.)
-		variantGroups = make(map[string][]string)
-		for k, v := range includeVariants {
-			variantGroups[k] = v
-		}
-		for k, v := range reqOptions.VariantOption.CompareVariants {
-			variantGroups[k] = v
-		}
-	}
-	if variantGroups == nil { // server-side view definitions may omit a variants map
-		variantGroups = map[string][]string{}
-	}
-
-	for _, group := range sortedKeys(variantGroups) {
-		group = param.Cleanse(group) // should be clean already, but just to make sure
-		paramName := fmt.Sprintf("variantGroup_%s", group)
-		queryString += fmt.Sprintf(" AND (jv_%s.variant_value in UNNEST(@%s))", group, paramName)
-		commonParams = append(commonParams, bigquery.QueryParameter{
-			Name:  paramName,
-			Value: variantGroups[group],
-		})
-	}
-
-	// filter by test properties
+	// Filter by capabilities: include if there is any intersection between the filter and test capabilities
 	if len(reqOptions.Capabilities) > 0 {
-		// include if there is any intersection between the arrays: capabilities filter and test capabilities
 		queryString += ` AND EXISTS(select 1
 		                            from UNNEST(@Capabilities) AS tcap
 		                            WHERE tcap in UNNEST(cm.capabilities)
@@ -493,9 +564,8 @@ func BuildComponentReportQuery(
 			Value: reqOptions.Capabilities,
 		})
 	}
+	// Filter by lifecycle: only applied to sample, not basis. Treat NULL or empty as "blocking".
 	if isSample && len(reqOptions.Lifecycles) > 0 {
-		// filter by lifecycle : only applied to sample, not basis
-		// treat NULL or empty lifecycle as "blocking"
 		queryString += ` AND COALESCE(NULLIF(lifecycle, ''), 'blocking') IN UNNEST(@Lifecycles)`
 		commonParams = append(commonParams, bigquery.QueryParameter{
 			Name:  "Lifecycles",
@@ -503,19 +573,9 @@ func BuildComponentReportQuery(
 		})
 	}
 
-	// In this context, a component report, multiple test ID options should not be specified. Thus
-	// here we assume just one for the filtering purposes here. This code triggers as you drill down
-	// on a main report into component > capability > tests, but it does not get used on a test details page.
+	// Filter by specific test properties when drilling down into a single test.
+	// Multiple TestIDOptions are only used in the test details query, not here.
 	if len(reqOptions.TestIDOptions) == 1 {
-		for _, group := range sortedKeys(reqOptions.TestIDOptions[0].RequestedVariants) {
-			group = param.Cleanse(group) // should be clean already, but just to make sure
-			paramName := fmt.Sprintf("ReqVariant_%s", group)
-			queryString += fmt.Sprintf(` AND jv_%s.variant_value = @%s`, group, paramName)
-			commonParams = append(commonParams, bigquery.QueryParameter{
-				Name:  paramName,
-				Value: reqOptions.TestIDOptions[0].RequestedVariants[group],
-			})
-		}
 		if reqOptions.TestIDOptions[0].Capability != "" {
 			queryString += " AND @Capability in UNNEST(capabilities)"
 			commonParams = append(commonParams, bigquery.QueryParameter{
@@ -532,10 +592,11 @@ func BuildComponentReportQuery(
 		}
 	}
 
-	groupString := fmt.Sprintf(`
+	groupString := `
 					GROUP BY
-						%s
-						cm.id `, groupByVariants)
+						jdk.variant_key,
+						cm.id
+					HAVING COUNT(cm.id) > SUM(junit_data.adjusted_success_val)`
 
 	return queryString, groupString, commonParams
 }
@@ -835,6 +896,14 @@ func deserializeRowToTestStatus(row []bigquery.Value, schema bigquery.Schema) (s
 			for i := range capArr {
 				cts.Capabilities[i] = capArr[i].(string)
 			}
+		case col == "variant_key":
+			if row[i] != nil {
+				for _, pair := range strings.Split(row[i].(string), ",") {
+					if k, v, ok := strings.Cut(pair, ":"); ok {
+						tid.Variants[k] = v
+					}
+				}
+			}
 		case strings.HasPrefix(col, "variant_"):
 			variantName := col[len("variant_"):]
 			if row[i] != nil {
@@ -865,15 +934,15 @@ type baseTestDetailsQueryGenerator struct {
 	ReqOptions     reqopts.RequestOptions
 	allJobVariants crtest.JobVariants
 	BaseRelease    string
-	BaseStart      time.Time
-	BaseEnd        time.Time
+	BaseStart      civil.Date
+	BaseEnd        civil.Date
 	TestIDOpts     []reqopts.TestIdentification
 }
 
 func NewBaseTestDetailsQueryGenerator(logger log.FieldLogger, client *bqcachedclient.Client,
 	reqOptions reqopts.RequestOptions,
 	allJobVariants crtest.JobVariants,
-	baseRelease string, baseStart time.Time, baseEnd time.Time,
+	baseRelease string, baseStart civil.Date, baseEnd civil.Date,
 	testIDOpts []reqopts.TestIdentification) *baseTestDetailsQueryGenerator {
 
 	return &baseTestDetailsQueryGenerator{
@@ -924,8 +993,8 @@ type sampleTestDetailsQueryGenerator struct {
 	ReqOptions      reqopts.RequestOptions
 	IncludeVariants map[string][]string
 
-	Start time.Time
-	End   time.Time
+	Start civil.Date
+	End   civil.Date
 }
 
 func NewSampleTestDetailsQueryGenerator(
@@ -933,7 +1002,7 @@ func NewSampleTestDetailsQueryGenerator(
 	reqOptions reqopts.RequestOptions,
 	allJobVariants crtest.JobVariants,
 	includeVariants map[string][]string,
-	start, end time.Time) *sampleTestDetailsQueryGenerator {
+	start, end civil.Date) *sampleTestDetailsQueryGenerator {
 	return &sampleTestDetailsQueryGenerator{
 		allJobVariants:  allJobVariants,
 		client:          client,

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/civil"
+
 	"github.com/openshift/sippy/pkg/api/componentreadiness/utils"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crtest"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crview"
@@ -101,10 +103,9 @@ func TestParseComponentReportRequest(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	nowTruncatedAligned := util.TruncateAligned(now, 12*time.Hour, 4*time.Hour)
+	today := civil.DateOf(now)
 
-	adjustDur := time.Duration(7) * 24 * time.Hour
-	nowMinus7Days := now.Add(-adjustDur)
+	nowMinus7Days := today.AddDays(-7)
 
 	tests := []struct {
 		name string
@@ -124,9 +125,9 @@ func TestParseComponentReportRequest(t *testing.T) {
 		{
 			name: "normal query params",
 			queryParams: [][]string{
-				{"baseEndTime", "2024-02-28T23:59:59Z"},
+				{"baseEndDate", "2024-02-29"},
 				{"baseRelease", "4.15"},
-				{"baseStartTime", "2024-02-01T00:00:00Z"},
+				{"baseStartDate", "2024-02-01"},
 				{"confidence", "95"},
 				{"columnGroupBy", "Platform,Architecture,Network"},
 				{"dbGroupBy", "Platform,Architecture,Network,Topology,FeatureSet,Upgrade,Installer"},
@@ -134,9 +135,9 @@ func TestParseComponentReportRequest(t *testing.T) {
 				{"ignoreMissing", "false"},
 				{"minFail", "3"},
 				{"pity", "5"},
-				{"sampleEndTime", "2024-04-11T23:59:59Z"},
+				{"sampleEndDate", "2024-04-12"},
 				{"sampleRelease", "4.16"},
-				{"sampleStartTime", "2024-04-04T00:00:05Z"},
+				{"sampleStartDate", "2024-04-04"},
 				{"includeVariant", "Architecture:amd64"},
 				{"includeVariant", "FeatureSet:default"},
 				{"includeVariant", "Installer:ipi"},
@@ -153,13 +154,13 @@ func TestParseComponentReportRequest(t *testing.T) {
 			},
 			baseRelease: reqopts.Release{
 				Name:  "4.15",
-				Start: time.Date(2024, time.February, 1, 0, 0, 0, 0, time.UTC),
-				End:   time.Date(2024, time.February, 28, 23, 59, 59, 0, time.UTC),
+				Start: civil.DateOf(time.Date(2024, time.February, 1, 0, 0, 0, 0, time.UTC)),
+				End:   civil.DateOf(time.Date(2024, time.February, 29, 0, 0, 0, 0, time.UTC)),
 			},
 			sampleRelease: reqopts.Release{
 				Name:  "4.16",
-				Start: time.Date(2024, time.April, 4, 0, 0, 5, 0, time.UTC),
-				End:   time.Date(2024, time.April, 11, 23, 59, 59, 0, time.UTC),
+				Start: civil.DateOf(time.Date(2024, time.April, 4, 0, 0, 5, 0, time.UTC)),
+				End:   civil.DateOf(time.Date(2024, time.April, 12, 0, 0, 0, 0, time.UTC)),
 			},
 			testIDOption: reqopts.TestIdentification{
 				RequestedVariants: map[string]string{},
@@ -182,9 +183,9 @@ func TestParseComponentReportRequest(t *testing.T) {
 		{
 			name: "relative time query params",
 			queryParams: [][]string{
-				{"baseEndTime", "ga"},
+				{"baseEndDate", "2024-02-29"},
 				{"baseRelease", "4.15"},
-				{"baseStartTime", "ga-30d"},
+				{"baseStartDate", "2024-01-29"},
 				{"confidence", "95"},
 				{"columnGroupBy", "Platform,Architecture,Network"},
 				{"dbGroupBy", "Platform,Architecture,Network,Topology,FeatureSet,Upgrade,Installer"},
@@ -192,9 +193,9 @@ func TestParseComponentReportRequest(t *testing.T) {
 				{"ignoreMissing", "false"},
 				{"minFail", "3"},
 				{"pity", "5"},
-				{"sampleEndTime", "2024-04-11T23:59:59Z"},
+				{"sampleEndDate", "2024-04-12"},
 				{"sampleRelease", "4.16"},
-				{"sampleStartTime", "2024-04-04T00:00:05Z"},
+				{"sampleStartDate", "2024-04-04"},
 				{"includeVariant", "Architecture:amd64"},
 				{"includeVariant", "FeatureSet:default"},
 				{"includeVariant", "Installer:ipi"},
@@ -211,13 +212,13 @@ func TestParseComponentReportRequest(t *testing.T) {
 			},
 			baseRelease: reqopts.Release{
 				Name:  "4.15",
-				Start: time.Date(2024, time.January, 29, 0, 0, 0, 0, time.UTC),
-				End:   time.Date(2024, time.February, 28, 23, 59, 59, 0, time.UTC),
+				Start: civil.DateOf(time.Date(2024, time.January, 29, 0, 0, 0, 0, time.UTC)),
+				End:   civil.DateOf(time.Date(2024, time.February, 29, 0, 0, 0, 0, time.UTC)),
 			},
 			sampleRelease: reqopts.Release{
 				Name:  "4.16",
-				Start: time.Date(2024, time.April, 4, 0, 0, 5, 0, time.UTC),
-				End:   time.Date(2024, time.April, 11, 23, 59, 59, 0, time.UTC),
+				Start: civil.DateOf(time.Date(2024, time.April, 4, 0, 0, 5, 0, time.UTC)),
+				End:   civil.DateOf(time.Date(2024, time.April, 12, 0, 0, 0, 0, time.UTC)),
 			},
 			testIDOption: reqopts.TestIdentification{
 				RequestedVariants: map[string]string{},
@@ -254,13 +255,13 @@ func TestParseComponentReportRequest(t *testing.T) {
 			},
 			baseRelease: reqopts.Release{
 				Name:  "4.16",
-				Start: time.Date(2024, time.May, 28, 0, 0, 0, 0, time.UTC),
-				End:   time.Date(2024, time.June, 27, 23, 59, 59, 0, time.UTC),
+				Start: civil.DateOf(time.Date(2024, time.May, 28, 0, 0, 0, 0, time.UTC)),
+				End:   civil.DateOf(time.Date(2024, time.June, 28, 0, 0, 0, 0, time.UTC)),
 			},
 			sampleRelease: reqopts.Release{
 				Name:  "4.17",
-				Start: time.Date(nowMinus7Days.Year(), nowMinus7Days.Month(), nowMinus7Days.Day(), 0, 0, 0, 0, time.UTC),
-				End:   nowTruncatedAligned,
+				Start: nowMinus7Days,
+				End:   today.AddDays(1),
 			},
 			testIDOption: reqopts.TestIdentification{
 				RequestedVariants: map[string]string{},
@@ -306,13 +307,13 @@ func TestParseComponentReportRequest(t *testing.T) {
 			},
 			baseRelease: reqopts.Release{
 				Name:  "4.16",
-				Start: time.Date(2024, time.May, 28, 0, 0, 0, 0, time.UTC),
-				End:   time.Date(2024, time.June, 27, 23, 59, 59, 0, time.UTC),
+				Start: civil.DateOf(time.Date(2024, time.May, 28, 0, 0, 0, 0, time.UTC)),
+				End:   civil.DateOf(time.Date(2024, time.June, 28, 0, 0, 0, 0, time.UTC)),
 			},
 			sampleRelease: reqopts.Release{
 				Name:  "4.17",
-				Start: time.Date(nowMinus7Days.Year(), nowMinus7Days.Month(), nowMinus7Days.Day(), 0, 0, 0, 0, time.UTC),
-				End:   nowTruncatedAligned,
+				Start: nowMinus7Days,
+				End:   today.AddDays(1),
 			},
 			testIDOption: reqopts.TestIdentification{
 				RequestedVariants: map[string]string{},
@@ -335,14 +336,14 @@ func TestParseComponentReportRequest(t *testing.T) {
 		{
 			name: "normal query params but with variant cross-compare",
 			queryParams: [][]string{
-				{"baseEndTime", "2024-02-28T23:59:59Z"},
+				{"baseEndDate", "2024-02-29"},
 				{"baseRelease", "4.15"},
-				{"baseStartTime", "2024-02-01T00:00:00Z"},
+				{"baseStartDate", "2024-02-01"},
 				{"columnGroupBy", "Platform,Network"},
 				{"dbGroupBy", "Platform,Network,FeatureSet,Upgrade,Installer"},
-				{"sampleEndTime", "2024-04-11T23:59:59Z"},
+				{"sampleEndDate", "2024-04-12"},
 				{"sampleRelease", "4.16"},
-				{"sampleStartTime", "2024-04-04T00:00:05Z"},
+				{"sampleStartDate", "2024-04-04"},
 				{"includeVariant", "Architecture:amd64"},
 				{"includeVariant", "Architecture:arm64"},
 				{"includeVariant", "Topology:ha"},
@@ -374,13 +375,13 @@ func TestParseComponentReportRequest(t *testing.T) {
 			},
 			baseRelease: reqopts.Release{
 				Name:  "4.15",
-				Start: time.Date(2024, time.February, 1, 0, 0, 0, 0, time.UTC),
-				End:   time.Date(2024, time.February, 28, 23, 59, 59, 0, time.UTC),
+				Start: civil.DateOf(time.Date(2024, time.February, 1, 0, 0, 0, 0, time.UTC)),
+				End:   civil.DateOf(time.Date(2024, time.February, 29, 0, 0, 0, 0, time.UTC)),
 			},
 			sampleRelease: reqopts.Release{
 				Name:  "4.16",
-				Start: time.Date(2024, time.April, 4, 0, 0, 5, 0, time.UTC),
-				End:   time.Date(2024, time.April, 11, 23, 59, 59, 0, time.UTC),
+				Start: civil.DateOf(time.Date(2024, time.April, 4, 0, 0, 5, 0, time.UTC)),
+				End:   civil.DateOf(time.Date(2024, time.April, 12, 0, 0, 0, 0, time.UTC)),
 			},
 			testIDOption: reqopts.TestIdentification{
 				RequestedVariants: map[string]string{},
@@ -422,13 +423,13 @@ func TestParseComponentReportRequest(t *testing.T) {
 			},
 			baseRelease: reqopts.Release{
 				Name:  "4.16",
-				Start: time.Date(2024, time.May, 28, 0, 0, 0, 0, time.UTC),
-				End:   time.Date(2024, time.June, 27, 23, 59, 59, 0, time.UTC),
+				Start: civil.DateOf(time.Date(2024, time.May, 28, 0, 0, 0, 0, time.UTC)),
+				End:   civil.DateOf(time.Date(2024, time.June, 28, 0, 0, 0, 0, time.UTC)),
 			},
 			sampleRelease: reqopts.Release{
 				Name:  "4.17",
-				Start: time.Date(nowMinus7Days.Year(), nowMinus7Days.Month(), nowMinus7Days.Day(), 0, 0, 0, 0, time.UTC),
-				End:   nowTruncatedAligned,
+				Start: nowMinus7Days,
+				End:   today.AddDays(1),
 			},
 			testIDOption: reqopts.TestIdentification{
 				RequestedVariants: map[string]string{},
@@ -539,17 +540,13 @@ func TestHATEOASLinkCacheConsistency(t *testing.T) {
 	views := []crview.View{view}
 
 	// Step 1: Simulate the cache preloader path — resolve dates from the view
-	baseReleaseOpts, err := utils.GetViewReleaseOptions(releases, "basis", view.BaseRelease, 0, 0)
+	baseReleaseOpts, err := utils.GetViewReleaseOptions(releases, "basis", view.BaseRelease)
 	require.NoError(t, err)
-	sampleReleaseOpts, err := utils.GetViewReleaseOptions(releases, "sample", view.SampleRelease, roundingFactor, roundingOffset)
+	sampleReleaseOpts, err := utils.GetViewReleaseOptions(releases, "sample", view.SampleRelease)
 	require.NoError(t, err)
 
-	// Base release times must always be start-of-day / end-of-day, never TruncateAligned
-	assert.Equal(t, 0, baseReleaseOpts.Start.Hour(), "base start must be 00:00 UTC (start-of-day)")
-	assert.Equal(t, 0, baseReleaseOpts.Start.Minute(), "base start must be 00:00 UTC (start-of-day)")
-	assert.Equal(t, 23, baseReleaseOpts.End.Hour(), "base end must be 23:59:59 UTC (end-of-day)")
-	assert.Equal(t, 59, baseReleaseOpts.End.Minute(), "base end must be 23:59:59 UTC (end-of-day)")
-	assert.Equal(t, 59, baseReleaseOpts.End.Second(), "base end must be 23:59:59 UTC (end-of-day)")
+	// Base release dates are civil.Date (day-level precision), so there is no
+	// time-of-day component to verify. The type system guarantees day-level granularity.
 
 	preloaderKey := GeneratorCacheKey{
 		BaseRelease:    baseReleaseOpts,

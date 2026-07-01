@@ -117,21 +117,15 @@ func CivilDatePtr(year int, month time.Month, day int) *civil.Date {
 // (i.e. now-7d, ga-30d, ga, etc
 var releaseRelativeRE = regexp.MustCompile(`^(now|ga|end)(?:-([0-9]+)([d]))?$`)
 
-// ParseCRReleaseTime parses the time for component readiness. The string can be a fully qualified
-// RFC8339 string, or a custom "relative to now/ga" string we support for views. (examples: now, now-7d,
-// ga, ga-30d, end-90d)
-//
-// It then adjusts the time based on a rounding factor if queried for "today". This is essentially a cache window used to keep
-// results consistent as various sub-queries are run for components/features. If the round factor of
-// 4h is used and a timeStr is provided which matches today, the timeStr will be rounded down to the nearest
-// even 4h. i.e. 04:00, 08:00, 12:00, etc.
+// ParseCRReleaseTime parses a relative time string for component readiness views.
+// Supported formats: now, now-7d, ga, ga-30d, end-90d.
 //
 // isStart indicates if a relative time string should round down (base/sample start time), or up (base/sample end time).
 // i.e. isStart=true, we would round down to 00:00:00 for the resulting times date.
 // For isStart=false we would round up to 23:59:59.
 //
 // endTime must be specified if your timeStr uses the end directive. (end-90d) Otherwise it is not required or used.
-func ParseCRReleaseTime(allReleases []v1.Release, release, timeStr string, isStart bool, endTime *time.Time, crTimeRoundingFactor, crTimeRoundingOffset time.Duration) (time.Time, error) {
+func ParseCRReleaseTime(allReleases []v1.Release, release, timeStr string, isStart bool, endTime *time.Time) (time.Time, error) {
 
 	var relTime time.Time
 
@@ -163,43 +157,22 @@ func ParseCRReleaseTime(allReleases []v1.Release, release, timeStr string, isSta
 			}
 			relTime = *endTime
 		}
-		return AdjustReleaseTime(relTime, isStart, matches[2], crTimeRoundingFactor, crTimeRoundingOffset), nil
+		return AdjustReleaseTime(relTime, isStart, matches[2]), nil
 	}
 
-	// Parse as a fully qualified timestamp:
-	var err error
-	relTime, err = time.Parse(time.RFC3339, timeStr)
-	if err != nil {
-		return relTime, err
-	}
-
-	// Apply the rounding factor:
-	now := time.Now().UTC()
-	if crTimeRoundingFactor > 0 && now.Format("2006-01-02") == relTime.Format("2006-01-02") {
-		relTime = TruncateAligned(now, crTimeRoundingFactor, crTimeRoundingOffset)
-	}
-	return relTime, nil
+	return time.Time{}, fmt.Errorf("unrecognized time format: %s", timeStr)
 }
 
-func AdjustReleaseTime(relTime time.Time, isStart bool, daysAdjustment string, crTimeRoundingFactor, crTimeRoundingOffset time.Duration) time.Time {
+func AdjustReleaseTime(relTime time.Time, isStart bool, daysAdjustment string) time.Time {
 	relTime = relTime.UTC()
 	// adjust by number of days:
 	adjustDays, _ := strconv.ParseInt(daysAdjustment, 10, 64)
 	adjustDur := time.Duration(adjustDays) * 24 * time.Hour
 	relTime = relTime.Add(-adjustDur)
-	// Now round to start/end of day as appropriate:
 	if isStart {
 		relTime = time.Date(relTime.Year(), relTime.Month(), relTime.Day(), 0, 0, 0, 0, time.UTC)
-
 	} else {
-		// Apply the rounding factor if using today:
-		now := time.Now().UTC()
-		if crTimeRoundingFactor > 0 && now.Format("2006-01-02") == relTime.Format("2006-01-02") {
-			relTime = TruncateAligned(now, crTimeRoundingFactor, crTimeRoundingOffset)
-		} else {
-			// otherwise round up to end of day
-			relTime = time.Date(relTime.Year(), relTime.Month(), relTime.Day(), 23, 59, 59, 0, time.UTC)
-		}
+		relTime = time.Date(relTime.Year(), relTime.Month(), relTime.Day(), 23, 59, 59, 0, time.UTC)
 	}
 	return relTime
 }

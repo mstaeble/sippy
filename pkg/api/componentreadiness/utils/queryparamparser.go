@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"time"
 
+	"cloud.google.com/go/civil"
+
 	"github.com/openshift/sippy/pkg/api"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crtest"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crview"
@@ -41,11 +43,11 @@ func ParseComponentReportRequest(
 		opts.VariantOption = view.VariantOptions
 		opts.AdvancedOption = view.AdvancedOptions
 		opts.TestFilters = view.TestFilters
-		opts.BaseRelease, err = GetViewReleaseOptions(releases, "basis", view.BaseRelease, 0, 0)
+		opts.BaseRelease, err = GetViewReleaseOptions(releases, "basis", view.BaseRelease)
 		if err != nil {
 			return
 		}
-		opts.SampleRelease, err = GetViewReleaseOptions(releases, "sample", view.SampleRelease, crTimeRoundingFactor, crTimeRoundingOffset)
+		opts.SampleRelease, err = GetViewReleaseOptions(releases, "sample", view.SampleRelease)
 		if err != nil {
 			return
 		}
@@ -159,14 +161,14 @@ func ParseComponentReportRequest(
 	}
 
 	// Date ranges override view defaults
-	if hasDateRangeInURL(req, "baseStartTime", "baseEndTime") {
-		opts.BaseRelease, err = parseDateRange(releases, req, opts.BaseRelease, "baseStartTime", "baseEndTime", 0, 0)
+	if hasDateRangeInURL(req, "baseStartDate", "baseEndDate") {
+		opts.BaseRelease, err = parseDateRange(req, opts.BaseRelease, "baseStartDate", "baseEndDate")
 		if err != nil {
 			return
 		}
 	}
-	if hasDateRangeInURL(req, "sampleStartTime", "sampleEndTime") {
-		opts.SampleRelease, err = parseDateRange(releases, req, opts.SampleRelease, "sampleStartTime", "sampleEndTime", crTimeRoundingFactor, crTimeRoundingOffset)
+	if hasDateRangeInURL(req, "sampleStartDate", "sampleEndDate") {
+		opts.SampleRelease, err = parseDateRange(req, opts.SampleRelease, "sampleStartDate", "sampleEndDate")
 		if err != nil {
 			return
 		}
@@ -215,6 +217,10 @@ func ParseComponentReportRequest(
 	if err != nil {
 		return
 	}
+	opts.UsePG, err = ParseBoolArg(req, "usePG", false)
+	if err != nil {
+		return
+	}
 
 	return
 }
@@ -241,19 +247,20 @@ func GetViewReleaseOptions(
 	releases []v1.Release,
 	releaseType string,
 	viewRelease reqopts.RelativeRelease,
-	roundingFactor, roundingOffset time.Duration,
 ) (reqopts.Release, error) {
 
 	var err error
 	opts := reqopts.Release{Name: viewRelease.Name}
-	opts.Start, err = util.ParseCRReleaseTime(releases, opts.Name, viewRelease.RelativeStart, true, nil, roundingFactor, roundingOffset)
+	startTime, err := util.ParseCRReleaseTime(releases, opts.Name, viewRelease.RelativeStart, true, nil)
 	if err != nil {
 		return opts, fmt.Errorf("%s start time %q in wrong format: %v", releaseType, viewRelease.RelativeStart, err)
 	}
-	opts.End, err = util.ParseCRReleaseTime(releases, opts.Name, viewRelease.RelativeEnd, false, nil, roundingFactor, roundingOffset)
+	opts.Start = civil.DateOf(startTime)
+	endTime, err := util.ParseCRReleaseTime(releases, opts.Name, viewRelease.RelativeEnd, false, nil)
 	if err != nil {
-		return opts, fmt.Errorf("%s start time %q in wrong format: %v", releaseType, viewRelease.RelativeEnd, err)
+		return opts, fmt.Errorf("%s end time %q in wrong format: %v", releaseType, viewRelease.RelativeEnd, err)
 	}
+	opts.End = civil.DateOf(endTime).AddDays(1)
 	return opts, nil
 }
 
@@ -408,24 +415,23 @@ func parseAdvancedOptions(req *http.Request) (advancedOption reqopts.Advanced, e
 	return
 }
 
-func parseDateRange(allReleases []v1.Release, req *http.Request,
+func parseDateRange(req *http.Request,
 	releaseOpts reqopts.Release,
 	startName string, endName string,
-	roundingFactor, roundingOffset time.Duration,
 ) (reqopts.Release, error) {
-	var err error
-
-	timeStr := req.URL.Query().Get(startName)
-	releaseOpts.Start, err = util.ParseCRReleaseTime(allReleases, releaseOpts.Name, timeStr, true, nil, roundingFactor, roundingOffset)
+	startStr := req.URL.Query().Get(startName)
+	start, err := civil.ParseDate(startStr)
 	if err != nil {
-		return releaseOpts, errors.New(startName + " in wrong format")
+		return releaseOpts, fmt.Errorf("%s in wrong format: %w", startName, err)
 	}
+	releaseOpts.Start = start
 
-	timeStr = req.URL.Query().Get(endName)
-	releaseOpts.End, err = util.ParseCRReleaseTime(allReleases, releaseOpts.Name, timeStr, false, nil, roundingFactor, roundingOffset)
+	endStr := req.URL.Query().Get(endName)
+	end, err := civil.ParseDate(endStr)
 	if err != nil {
-		return releaseOpts, errors.New(endName + " in wrong format")
+		return releaseOpts, fmt.Errorf("%s in wrong format: %w", endName, err)
 	}
+	releaseOpts.End = end
 	return releaseOpts, nil
 }
 

@@ -4,6 +4,8 @@ import (
 	"math/big"
 	"time"
 
+	"cloud.google.com/go/civil"
+
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crtest"
 	"github.com/openshift/sippy/pkg/db/models"
 )
@@ -86,8 +88,8 @@ type TestComparison struct {
 
 type ReleaseStats struct {
 	Release string `json:"release"`
-	Start   *time.Time
-	End     *time.Time
+	Start   *civil.Date
+	End     *civil.Date
 	crtest.Stats
 }
 

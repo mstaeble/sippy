@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
+	"cloud.google.com/go/civil"
 	"github.com/apache/thrift/lib/go/thrift"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crstatus"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crtest"
@@ -53,10 +53,22 @@ var (
 		PityFactor:     5,
 		MinimumFailure: 3,
 	}
+	defaultBaseRelease = reqopts.Release{
+		Name:  "4.18",
+		Start: civil.Date{Year: 2025, Month: 1, Day: 1},
+		End:   civil.Date{Year: 2025, Month: 2, Day: 1},
+	}
+	defaultSampleRelease = reqopts.Release{
+		Name:  "4.19",
+		Start: civil.Date{Year: 2025, Month: 6, Day: 1},
+		End:   civil.Date{Year: 2025, Month: 6, Day: 8},
+	}
 	defaultColumnGroupByVariants    = sets.NewString(strings.Split(DefaultColumnGroupBy, ",")...)
 	defaultDBGroupByVariants        = sets.NewString(strings.Split(DefaultDBGroupBy, ",")...)
 	defaultComponentReportGenerator = ComponentReportGenerator{
 		ReqOptions: reqopts.RequestOptions{
+			BaseRelease:   defaultBaseRelease,
+			SampleRelease: defaultSampleRelease,
 			VariantOption: reqopts.Variants{
 				ColumnGroupBy: defaultColumnGroupByVariants,
 				DBGroupBy:     defaultDBGroupByVariants,
@@ -72,6 +84,8 @@ var (
 	}
 	flakeFailComponentReportGenerator = ComponentReportGenerator{
 		ReqOptions: reqopts.RequestOptions{
+			BaseRelease:   defaultBaseRelease,
+			SampleRelease: defaultSampleRelease,
 			VariantOption: reqopts.Variants{
 				ColumnGroupBy: defaultColumnGroupByVariants,
 				DBGroupBy:     defaultDBGroupByVariants,
@@ -82,6 +96,8 @@ var (
 	installerColumnGroupByVariants           = sets.NewString("Platform", "Architecture", "Network", "Installer")
 	groupByInstallerComponentReportGenerator = ComponentReportGenerator{
 		ReqOptions: reqopts.RequestOptions{
+			BaseRelease:   defaultBaseRelease,
+			SampleRelease: defaultSampleRelease,
 			VariantOption: reqopts.Variants{
 				ColumnGroupBy: installerColumnGroupByVariants,
 				DBGroupBy:     defaultDBGroupByVariants,
@@ -91,6 +107,8 @@ var (
 	}
 	componentPageGenerator = ComponentReportGenerator{
 		ReqOptions: reqopts.RequestOptions{
+			BaseRelease:   defaultBaseRelease,
+			SampleRelease: defaultSampleRelease,
 			TestIDOptions: []reqopts.TestIdentification{
 				{
 					Component: "component 2",
@@ -105,6 +123,8 @@ var (
 	}
 	capabilityPageGenerator = ComponentReportGenerator{
 		ReqOptions: reqopts.RequestOptions{
+			BaseRelease:   defaultBaseRelease,
+			SampleRelease: defaultSampleRelease,
 			TestIDOptions: []reqopts.TestIdentification{
 				{
 					Component:  "component 2",
@@ -120,6 +140,8 @@ var (
 	}
 	testPageGenerator = ComponentReportGenerator{
 		ReqOptions: reqopts.RequestOptions{
+			BaseRelease:   defaultBaseRelease,
+			SampleRelease: defaultSampleRelease,
 			TestIDOptions: []reqopts.TestIdentification{
 				{
 					Component:  "component 2",
@@ -136,6 +158,8 @@ var (
 	}
 	testDetailsGenerator = ComponentReportGenerator{
 		ReqOptions: reqopts.RequestOptions{
+			BaseRelease:   defaultBaseRelease,
+			SampleRelease: defaultSampleRelease,
 			TestIDOptions: []reqopts.TestIdentification{
 				{
 					Component:  "component 1",
@@ -537,24 +561,26 @@ func TestGenerateComponentReport(t *testing.T) {
 											ReportStatus: crtest.ExtremeRegression,
 											FisherExact:  thrift.Float64Ptr(1.8251046156331867e-21),
 											SampleStats: testdetails.ReleaseStats{
+												Release: defaultSampleRelease.Name,
 												Stats: crtest.Stats{
 													SuccessRate:  0.51,
 													SuccessCount: 50,
 													FailureCount: 49,
 													FlakeCount:   1,
 												},
-												Start: &time.Time{},
-												End:   &time.Time{},
+												Start: &defaultSampleRelease.Start,
+												End:   &defaultSampleRelease.End,
 											},
 											BaseStats: &testdetails.ReleaseStats{
+												Release: defaultBaseRelease.Name,
 												Stats: crtest.Stats{
 													SuccessRate:  0.91,
 													SuccessCount: 900,
 													FailureCount: 90,
 													FlakeCount:   10,
 												},
-												Start: &time.Time{},
-												End:   &time.Time{},
+												Start: &defaultBaseRelease.Start,
+												End:   &defaultBaseRelease.End,
 											},
 										},
 									},
@@ -579,24 +605,26 @@ func TestGenerateComponentReport(t *testing.T) {
 											ReportStatus: crtest.SignificantRegression,
 											FisherExact:  thrift.Float64Ptr(0.002621948654892275),
 											SampleStats: testdetails.ReleaseStats{
+												Release: defaultSampleRelease.Name,
 												Stats: crtest.Stats{
 													SuccessRate:  0.81,
 													SuccessCount: 80,
 													FailureCount: 19,
 													FlakeCount:   1,
 												},
-												Start: &time.Time{},
-												End:   &time.Time{},
+												Start: &defaultSampleRelease.Start,
+												End:   &defaultSampleRelease.End,
 											},
 											BaseStats: &testdetails.ReleaseStats{
+												Release: defaultBaseRelease.Name,
 												Stats: crtest.Stats{
 													SuccessRate:  0.91,
 													SuccessCount: 900,
 													FailureCount: 90,
 													FlakeCount:   10,
 												},
-												Start: &time.Time{},
-												End:   &time.Time{},
+												Start: &defaultBaseRelease.Start,
+												End:   &defaultBaseRelease.End,
 											},
 										},
 									},
@@ -828,6 +856,8 @@ func TestGenerateComponentReport(t *testing.T) {
 			name: "top page test confidence 90 result in regression",
 			generator: ComponentReportGenerator{
 				ReqOptions: reqopts.RequestOptions{
+					BaseRelease:   defaultBaseRelease,
+					SampleRelease: defaultSampleRelease,
 					VariantOption: reqopts.Variants{
 						ColumnGroupBy: defaultColumnGroupByVariants,
 					},
@@ -876,24 +906,26 @@ func TestGenerateComponentReport(t *testing.T) {
 											ReportStatus: crtest.SignificantRegression,
 											FisherExact:  thrift.Float64Ptr(0.07837082801914011),
 											SampleStats: testdetails.ReleaseStats{
+												Release: defaultSampleRelease.Name,
 												Stats: crtest.Stats{
 													SuccessRate:  0.86,
 													SuccessCount: 85,
 													FailureCount: 14,
 													FlakeCount:   1,
 												},
-												Start: &time.Time{},
-												End:   &time.Time{},
+												Start: &defaultSampleRelease.Start,
+												End:   &defaultSampleRelease.End,
 											},
 											BaseStats: &testdetails.ReleaseStats{
+												Release: defaultBaseRelease.Name,
 												Stats: crtest.Stats{
 													SuccessRate:  0.91,
 													SuccessCount: 900,
 													FailureCount: 90,
 													FlakeCount:   10,
 												},
-												Start: &time.Time{},
-												End:   &time.Time{},
+												Start: &defaultBaseRelease.Start,
+												End:   &defaultBaseRelease.End,
 											},
 										},
 									},
@@ -925,6 +957,8 @@ func TestGenerateComponentReport(t *testing.T) {
 			name: "top page test confidence 90 pity 10 result in no regression",
 			generator: ComponentReportGenerator{
 				ReqOptions: reqopts.RequestOptions{
+					BaseRelease:   defaultBaseRelease,
+					SampleRelease: defaultSampleRelease,
 					VariantOption: reqopts.Variants{
 						ColumnGroupBy: defaultColumnGroupByVariants,
 					},
@@ -1105,24 +1139,26 @@ func TestGenerateComponentReport(t *testing.T) {
 											ReportStatus: crtest.ExtremeRegression,
 											FisherExact:  thrift.Float64Ptr(1.0800451094957381e-20),
 											SampleStats: testdetails.ReleaseStats{
+												Release: defaultSampleRelease.Name,
 												Stats: crtest.Stats{
 													SuccessRate:  0.5,
 													SuccessCount: 50,
 													FailureCount: 49,
 													FlakeCount:   1,
 												},
-												Start: &time.Time{},
-												End:   &time.Time{},
+												Start: &defaultSampleRelease.Start,
+												End:   &defaultSampleRelease.End,
 											},
 											BaseStats: &testdetails.ReleaseStats{
+												Release: defaultBaseRelease.Name,
 												Stats: crtest.Stats{
 													SuccessRate:  0.9,
 													SuccessCount: 900,
 													FailureCount: 90,
 													FlakeCount:   10,
 												},
-												Start: &time.Time{},
-												End:   &time.Time{},
+												Start: &defaultBaseRelease.Start,
+												End:   &defaultBaseRelease.End,
 											},
 										},
 									},
@@ -1147,24 +1183,26 @@ func TestGenerateComponentReport(t *testing.T) {
 											ReportStatus: crtest.SignificantRegression,
 											FisherExact:  thrift.Float64Ptr(0.0035097810890055117),
 											SampleStats: testdetails.ReleaseStats{
+												Release: defaultSampleRelease.Name,
 												Stats: crtest.Stats{
 													SuccessRate:  0.8,
 													SuccessCount: 80,
 													FailureCount: 19,
 													FlakeCount:   1,
 												},
-												Start: &time.Time{},
-												End:   &time.Time{},
+												Start: &defaultSampleRelease.Start,
+												End:   &defaultSampleRelease.End,
 											},
 											BaseStats: &testdetails.ReleaseStats{
+												Release: defaultBaseRelease.Name,
 												Stats: crtest.Stats{
 													SuccessRate:  0.9,
 													SuccessCount: 900,
 													FailureCount: 90,
 													FlakeCount:   10,
 												},
-												Start: &time.Time{},
-												End:   &time.Time{},
+												Start: &defaultBaseRelease.Start,
+												End:   &defaultBaseRelease.End,
 											},
 										},
 									},
@@ -1272,8 +1310,8 @@ func TestGenerateComponentTestDetailsReport(t *testing.T) {
 			FailureCount: 18,
 			FlakeCount:   8,
 		},
-		Start: &time.Time{},
-		End:   &time.Time{},
+		Start: &defaultSampleRelease.Start,
+		End:   &defaultSampleRelease.End,
 	}
 	baseReleaseStatsTwoHigh := testdetails.ReleaseStats{
 		Release: testDetailsGenerator.ReqOptions.BaseRelease.Name,
@@ -1283,6 +1321,8 @@ func TestGenerateComponentTestDetailsReport(t *testing.T) {
 			FailureCount: 200,
 			FlakeCount:   100,
 		},
+		Start: &defaultBaseRelease.Start,
+		End:   &defaultBaseRelease.End,
 	}
 	sampleTestStatsHigh := crtest.Stats{
 		SuccessRate:  0.9203539823008849,
@@ -1316,8 +1356,8 @@ func TestGenerateComponentTestDetailsReport(t *testing.T) {
 			FailureCount: 9,
 			FlakeCount:   4,
 		},
-		Start: &time.Time{},
-		End:   &time.Time{},
+		Start: &defaultSampleRelease.Start,
+		End:   &defaultSampleRelease.End,
 	}
 	baseReleaseStatsOneHigh := testdetails.ReleaseStats{
 		Release: testDetailsGenerator.ReqOptions.BaseRelease.Name,
@@ -1327,6 +1367,8 @@ func TestGenerateComponentTestDetailsReport(t *testing.T) {
 			FailureCount: 100,
 			FlakeCount:   50,
 		},
+		Start: &defaultBaseRelease.Start,
+		End:   &defaultBaseRelease.End,
 	}
 	sampleReleaseStatsOneLow := testdetails.ReleaseStats{
 		Release: testDetailsGenerator.ReqOptions.SampleRelease.Name,
@@ -1336,8 +1378,8 @@ func TestGenerateComponentTestDetailsReport(t *testing.T) {
 			FailureCount: 59,
 			FlakeCount:   4,
 		},
-		Start: &time.Time{},
-		End:   &time.Time{},
+		Start: &defaultSampleRelease.Start,
+		End:   &defaultSampleRelease.End,
 	}
 	baseReleaseStatsOneLow := testdetails.ReleaseStats{
 		Release: testDetailsGenerator.ReqOptions.BaseRelease.Name,
@@ -1347,6 +1389,8 @@ func TestGenerateComponentTestDetailsReport(t *testing.T) {
 			FailureCount: 600,
 			FlakeCount:   50,
 		},
+		Start: &defaultBaseRelease.Start,
+		End:   &defaultBaseRelease.End,
 	}
 	tests := []struct {
 		name                    string

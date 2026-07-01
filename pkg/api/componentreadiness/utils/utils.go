@@ -3,6 +3,8 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
+
+	"cloud.google.com/go/civil"
 	"net/url"
 	"regexp"
 	"sort"
@@ -31,19 +33,17 @@ func PreviousRelease(release string, releaseConfigs []sippyv1.Release) (string, 
 	return "", fmt.Errorf("release %s not found in release list", release)
 }
 
-// FindStartEndTimesForRelease finds the start and end times for a release from sippyv1.Release objects.
-// The start time is calculated as 30 days before the GA date, and the end time is the GA date.
-func FindStartEndTimesForRelease(timeRanges []crtest.ReleaseTimeRange, release string) (*time.Time, *time.Time, error) {
-	for _, r := range timeRanges {
-		if r.Release != release {
-			continue
+// FindGADateForRelease returns the GA date for a release from the release configs.
+func FindGADateForRelease(releases []sippyv1.Release, release string) (*civil.Date, error) {
+	for _, r := range releases {
+		if r.Release == release {
+			if r.GADate == nil {
+				return nil, fmt.Errorf("release %s has no GA date", release)
+			}
+			return r.GADate, nil
 		}
-		if r.Start == nil || r.End == nil {
-			return nil, nil, fmt.Errorf("release %s has no GA date", release)
-		}
-		return r.Start, r.End, nil
 	}
-	return nil, nil, fmt.Errorf("release %s not found", release)
+	return nil, fmt.Errorf("release %s not found", release)
 }
 
 func NormalizeProwJobName(prowName string) string {
@@ -145,10 +145,10 @@ func addReleaseParams(
 ) {
 	params.Add("baseRelease", baseReleaseOpts.Name)
 	params.Add("sampleRelease", sampleReleaseOpts.Name)
-	params.Add("baseStartTime", baseReleaseOpts.Start.Format("2006-01-02T15:04:05Z"))
-	params.Add("baseEndTime", baseReleaseOpts.End.Format("2006-01-02T15:04:05Z"))
-	params.Add("sampleStartTime", sampleReleaseOpts.Start.Format("2006-01-02T15:04:05Z"))
-	params.Add("sampleEndTime", sampleReleaseOpts.End.Format("2006-01-02T15:04:05Z"))
+	params.Add("baseStartDate", baseReleaseOpts.Start.String())
+	params.Add("baseEndDate", baseReleaseOpts.End.String())
+	params.Add("sampleStartDate", sampleReleaseOpts.Start.String())
+	params.Add("sampleEndDate", sampleReleaseOpts.End.String())
 
 	// Add PR options if present
 	if sampleReleaseOpts.PullRequestOptions != nil {
@@ -348,4 +348,25 @@ func EnqueueAsync[T any](wg *sync.WaitGroup, channel chan T, things ...T) {
 		}
 		wg.Done()
 	}()
+}
+
+// DateToTimePtr converts a civil.Date to a *time.Time (midnight UTC).
+func DateToTimePtr(d civil.Date) *time.Time {
+	t := d.In(time.UTC)
+	return &t
+}
+
+// gaLookbackDays is the number of days before the GA date included in the
+// GA base window.
+const gaLookbackDays = 30
+
+// GAWindowStart returns the first day of the GA base window.
+func GAWindowStart(gaDate civil.Date) civil.Date {
+	return gaDate.AddDays(-gaLookbackDays)
+}
+
+// GAWindowEnd returns the exclusive end of the GA base window (the day after
+// the GA date).
+func GAWindowEnd(gaDate civil.Date) civil.Date {
+	return gaDate.AddDays(1)
 }

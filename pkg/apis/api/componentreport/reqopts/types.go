@@ -1,7 +1,7 @@
 package reqopts
 
 import (
-	"time"
+	"cloud.google.com/go/civil"
 
 	"github.com/openshift/sippy/pkg/apis/cache"
 	"github.com/openshift/sippy/pkg/util/sets"
@@ -23,6 +23,8 @@ type RequestOptions struct {
 	// When generating test details URLs, if a view is present, we include just the view parameter
 	// plus test-specific overrides, rather than expanding all view parameters into the URL.
 	ViewName string `json:"view_name,omitempty" yaml:"view_name,omitempty"`
+	// UsePG tries the matview path before falling back to BigQuery.
+	UsePG bool `json:"use_pg,omitempty" yaml:"use_pg,omitempty"`
 }
 
 // PullRequest specifies a specific pull request to use as the
@@ -43,8 +45,8 @@ type Release struct {
 	Name               string       `json:"release" yaml:"release"`
 	PullRequestOptions *PullRequest `json:"pull_request_options,omitempty" yaml:"pull_request_options,omitempty"`
 	PayloadOptions     *Payload     `json:"payload_options,omitempty" yaml:"payload_options,omitempty"`
-	Start              time.Time    `json:"start,omitempty" yaml:"start,omitempty"`
-	End                time.Time    `json:"end,omitempty" yaml:"end,omitempty"`
+	Start              civil.Date   `json:"start,omitempty" yaml:"start,omitempty"`
+	End                civil.Date   `json:"end,omitempty" yaml:"end,omitempty"`
 }
 
 // RelativeRelease is an unfortunate necessity for views where we do not have

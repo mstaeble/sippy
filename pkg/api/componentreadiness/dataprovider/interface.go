@@ -2,7 +2,8 @@ package dataprovider
 
 import (
 	"context"
-	"time"
+
+	"cloud.google.com/go/civil"
 
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crstatus"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crtest"
@@ -21,7 +22,7 @@ type TestStatusQuerier interface {
 	QuerySampleTestStatus(ctx context.Context, reqOptions reqopts.RequestOptions,
 		allJobVariants crtest.JobVariants,
 		includeVariants map[string][]string,
-		start, end time.Time) (map[string]crstatus.TestStatus, []error)
+		start, end civil.Date) (map[string]crstatus.TestStatus, []error)
 }
 
 // TestDetailsQuerier fetches per-job-run test breakdowns used for test details reports.
@@ -32,16 +33,13 @@ type TestDetailsQuerier interface {
 	QuerySampleJobRunTestStatus(ctx context.Context, reqOptions reqopts.RequestOptions,
 		allJobVariants crtest.JobVariants,
 		includeVariants map[string][]string,
-		start, end time.Time) (map[string][]crstatus.TestJobRunRows, []error)
+		start, end civil.Date) (map[string][]crstatus.TestJobRunRows, []error)
 }
 
 // MetadataQuerier fetches reference data used to configure and parameterize reports.
 type MetadataQuerier interface {
 	// QueryJobVariants returns all variant names and their possible values.
 	QueryJobVariants(ctx context.Context) (crtest.JobVariants, []error)
-
-	// QueryReleaseDates returns the time ranges for each known release.
-	QueryReleaseDates(ctx context.Context, reqOptions reqopts.RequestOptions) ([]crtest.ReleaseTimeRange, []error)
 
 	// QueryReleases returns known release configurations.
 	QueryReleases(ctx context.Context) ([]v1.Release, error)
@@ -56,7 +54,7 @@ type JobQuerier interface {
 	// QueryJobRuns returns pass/fail statistics per job for a release in a time window.
 	QueryJobRuns(ctx context.Context, reqOptions reqopts.RequestOptions,
 		allJobVariants crtest.JobVariants,
-		release string, start, end time.Time) (map[string]JobRunStats, error)
+		release string, start, end civil.Date) (map[string]JobRunStats, error)
 
 	// QueryJobVariantValues returns variant key/value pairs for the given jobs.
 	QueryJobVariantValues(ctx context.Context, jobNames []string,

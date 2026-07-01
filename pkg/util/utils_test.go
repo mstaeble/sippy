@@ -24,21 +24,14 @@ func TestParseCRReleaseTime(t *testing.T) {
 	jan142025 := time.Date(2025, 1, 14, 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name           string
-		timeStr        string
-		release        string
-		isStart        bool
-		endTime        *time.Time
-		roundingFactor time.Duration
-		expectedTime   time.Time
-		expectedErr    bool
+		name         string
+		timeStr      string
+		release      string
+		isStart      bool
+		endTime      *time.Time
+		expectedTime time.Time
+		expectedErr  bool
 	}{
-		{
-			name:         "fully qualified RFC3339",
-			isStart:      false,
-			timeStr:      "2024-06-27T23:50:50Z",
-			expectedTime: time.Date(2024, 6, 27, 23, 50, 50, 0, time.UTC),
-		},
 		{
 			name:         "now start date",
 			timeStr:      "now",
@@ -50,13 +43,6 @@ func TestParseCRReleaseTime(t *testing.T) {
 			timeStr:      "now",
 			isStart:      false,
 			expectedTime: nowRoundUp,
-		},
-		{
-			name:           "now end date with cache rounding",
-			timeStr:        "now",
-			roundingFactor: 12 * time.Hour,
-			isStart:        false,
-			expectedTime:   now.Truncate(12 * time.Hour),
 		},
 		{
 			name:         "now-7d start date",
@@ -122,7 +108,7 @@ func TestParseCRReleaseTime(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resultTime, err := ParseCRReleaseTime(releases, tt.release, tt.timeStr, tt.isStart, tt.endTime, tt.roundingFactor, 0)
+			resultTime, err := ParseCRReleaseTime(releases, tt.release, tt.timeStr, tt.isStart, tt.endTime)
 			if tt.expectedErr {
 				require.Error(t, err)
 			} else {

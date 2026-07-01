@@ -83,6 +83,88 @@ var PostgresMatViews = []PostgresView{
 		IndexColumns:   []string{"release", "architecture", "stream", "prow_job_run_id", "test_id", "suite_id"},
 		ReplaceStrings: map[string]string{},
 	},
+	{
+		Name:         "cr_test_status_7d_matview",
+		Definition:   crTestStatusMatView,
+		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
+		RefreshPhase: 1,
+		ReplaceStrings: map[string]string{
+			"|||START|||": "CURRENT_DATE - 7",
+			"|||END|||":   "CURRENT_DATE + 1",
+		},
+	},
+	{
+		Name:         "cr_test_status_30d_matview",
+		Definition:   crTestStatusMatView,
+		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
+		RefreshPhase: 1,
+		ReplaceStrings: map[string]string{
+			"|||START|||": "CURRENT_DATE - 30",
+			"|||END|||":   "CURRENT_DATE + 1",
+		},
+	},
+	{
+		Name:         "cr_test_status_90d_matview",
+		Definition:   crTestStatusMatView,
+		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
+		RefreshPhase: 2,
+		ReplaceStrings: map[string]string{
+			"|||START|||": "CURRENT_DATE - 90",
+			"|||END|||":   "CURRENT_DATE + 1",
+		},
+	},
+	{
+		Name:         "cr_test_status_60d_30d_matview",
+		Definition:   crTestStatusMatView,
+		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
+		RefreshPhase: 2,
+		ReplaceStrings: map[string]string{
+			"|||START|||": "CURRENT_DATE - 60",
+			"|||END|||":   "CURRENT_DATE - 30 + 1",
+		},
+	},
+	{
+		Name:         "prow_ga_test_statuses_matview",
+		Definition:   gaTestStatusMatView,
+		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
+		RefreshPhase: 1,
+	},
+	{
+		Name:         "cr_cell_grid_7d_matview",
+		Definition:   crCellGridMatView,
+		IndexColumns: []string{"release", "component", "variant_combination_id"},
+		RefreshPhase: 2,
+		ReplaceStrings: map[string]string{
+			"|||SOURCE|||": "cr_test_status_7d_matview",
+		},
+	},
+	{
+		Name:         "cr_cell_grid_30d_matview",
+		Definition:   crCellGridMatView,
+		IndexColumns: []string{"release", "component", "variant_combination_id"},
+		RefreshPhase: 2,
+		ReplaceStrings: map[string]string{
+			"|||SOURCE|||": "cr_test_status_30d_matview",
+		},
+	},
+	{
+		Name:         "cr_cell_grid_90d_matview",
+		Definition:   crCellGridMatView,
+		IndexColumns: []string{"release", "component", "variant_combination_id"},
+		RefreshPhase: 3,
+		ReplaceStrings: map[string]string{
+			"|||SOURCE|||": "cr_test_status_90d_matview",
+		},
+	},
+	{
+		Name:         "cr_cell_grid_60d_30d_matview",
+		Definition:   crCellGridMatView,
+		IndexColumns: []string{"release", "component", "variant_combination_id"},
+		RefreshPhase: 3,
+		ReplaceStrings: map[string]string{
+			"|||SOURCE|||": "cr_test_status_60d_30d_matview",
+		},
+	},
 }
 
 // PostgresViews are regular, non-materialized views:
@@ -482,4 +564,44 @@ WHERE
     AND pjr.id = pjrt.prow_job_run_id
     AND pj.id = pjr.prow_job_id
 ORDER BY pjrt.id DESC
+`
+
+const crTestStatusMatView = `
+SELECT
+    tds.test_id,
+    tds.suite_id,
+    pj.variant_combination_id,
+    tds.release,
+    SUM(tds.runs)::int AS total_count,
+    SUM(tds.successes + tds.flakes)::int AS success_count,
+    SUM(tds.flakes)::int AS flake_count
+FROM test_daily_summaries tds
+JOIN prow_jobs pj ON tds.prow_job_id = pj.id
+WHERE tds.summary_date >= |||START||| AND tds.summary_date < |||END|||
+GROUP BY tds.test_id, tds.suite_id, pj.variant_combination_id, tds.release
+`
+
+const gaTestStatusMatView = `
+SELECT
+    t.id AS test_id,
+    COALESCE(s.id, 0) AS suite_id,
+    pj.variant_combination_id,
+    raw.release,
+    SUM(raw.runs)::int AS total_count,
+    SUM(raw.passes + raw.flakes)::int AS success_count,
+    SUM(raw.flakes)::int AS flake_count
+FROM prow_ga_raw_test_data raw
+JOIN tests t ON t.name = raw.test_name
+JOIN prow_jobs pj ON pj.name = raw.job_name AND pj.deleted_at IS NULL AND pj.variant_combination_id IS NOT NULL
+LEFT JOIN suites s ON s.name = raw.suite
+GROUP BY t.id, COALESCE(s.id, 0), pj.variant_combination_id, raw.release
+`
+
+const crCellGridMatView = `
+SELECT DISTINCT mv.release, tow.component, mv.variant_combination_id
+FROM |||SOURCE||| mv
+JOIN test_ownerships tow ON tow.test_id = mv.test_id
+    AND (tow.suite_id = mv.suite_id OR (tow.suite_id IS NULL AND mv.suite_id = 0))
+WHERE tow.staff_approved_obsolete = false
+  AND mv.variant_combination_id IS NOT NULL
 `

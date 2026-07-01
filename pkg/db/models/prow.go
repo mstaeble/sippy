@@ -175,12 +175,26 @@ type TestDailySummary struct {
 	TestID      uint      `gorm:"column:test_id;not null"`
 	ProwJobID   uint      `gorm:"column:prow_job_id;not null"`
 	SuiteID     uint      `gorm:"column:suite_id;not null;default:0"`
-	Release     string    `gorm:"column:release;not null"`
-	SummaryDate time.Time `gorm:"column:summary_date;type:date;not null"`
+	Release     string    `gorm:"column:release;not null;index:idx_test_daily_summaries_release_date,priority:1"`
+	SummaryDate time.Time `gorm:"column:summary_date;type:date;not null;index:idx_test_daily_summaries_release_date,priority:2"`
 	Successes   int32     `gorm:"column:successes;not null;default:0"`
 	Failures    int32     `gorm:"column:failures;not null;default:0"`
 	Flakes      int32     `gorm:"column:flakes;not null;default:0"`
 	Runs        int32     `gorm:"column:runs;not null;default:0"`
+}
+
+// ProwGARawTestDatum stores raw BigQuery test results for GA release windows.
+// Fetched once per GA date and persisted so that the aggregation into
+// prow_ga_test_statuses_matview can be re-run cheaply when dimension tables change.
+type ProwGARawTestDatum struct {
+	Release  string `gorm:"not null;index"`
+	TestName string `gorm:"not null"`
+	JobName  string `gorm:"not null"`
+	Suite    string `gorm:"not null;default:''"`
+	Passes   int64  `gorm:"not null;default:0"`
+	Failures int64  `gorm:"not null;default:0"`
+	Flakes   int64  `gorm:"not null;default:0"`
+	Runs     int64  `gorm:"not null;default:0"`
 }
 
 // Bug represents a Jira bug.

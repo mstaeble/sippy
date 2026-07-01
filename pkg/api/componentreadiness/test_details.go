@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"cloud.google.com/go/civil"
 	fet "github.com/glycerine/golang-fisher-exact"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crstatus"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crtest"
@@ -197,11 +198,6 @@ func (c *ComponentReportGenerator) GenerateDetailsReportForTest(
 		}
 	}
 
-	timeRanges, errs := c.dataProvider.QueryReleaseDates(ctx, c.ReqOptions)
-	if errs != nil {
-		return testdetails.Report{}, errs
-	}
-
 	now := time.Now()
 	componentJobRunTestReportStatus.GeneratedAt = &now
 
@@ -232,14 +228,16 @@ func (c *ComponentReportGenerator) GenerateDetailsReportForTest(
 			return testdetails.Report{}, []error{err}
 		}
 
-		start, end, err := utils.FindStartEndTimesForRelease(timeRanges, testIDOption.BaseOverrideRelease)
+		gaDate, err := utils.FindGADateForRelease(c.releaseConfigs, testIDOption.BaseOverrideRelease)
 		if err != nil {
 			return testdetails.Report{}, []error{err}
 		}
 
+		overrideStart := gaDate.AddDays(-30)
+		overrideEnd := gaDate.AddDays(1)
 		overrideReport := c.internalGenerateTestDetailsReport(
 			testIDOption.BaseOverrideRelease,
-			start, end,
+			&overrideStart, &overrideEnd,
 			componentJobRunTestReportStatus.BaseOverrideStatus, componentJobRunTestReportStatus.SampleStatus,
 			testIDOption)
 		// swap out the base dates for the override
@@ -267,7 +265,7 @@ func (c *ComponentReportGenerator) GenerateDetailsReportForTest(
 	}
 
 	// Add a "latest" link if the requested sample data is more than 48 hours old
-	if time.Since(c.ReqOptions.SampleRelease.End) > 48*time.Hour {
+	if time.Since(c.ReqOptions.SampleRelease.End.In(time.UTC)) > 48*time.Hour {
 		if report.Links == nil {
 			report.Links = make(map[string]string)
 		}
@@ -293,8 +291,8 @@ func (c *ComponentReportGenerator) GenerateDetailsReportForTest(
 			Name:               c.ReqOptions.SampleRelease.Name,
 			PullRequestOptions: c.ReqOptions.SampleRelease.PullRequestOptions,
 			PayloadOptions:     c.ReqOptions.SampleRelease.PayloadOptions,
-			Start:              newSampleStart,
-			End:                newSampleEnd,
+			Start:              civil.DateOf(newSampleStart),
+			End:                civil.DateOf(newSampleEnd),
 		}
 
 		// Convert variants map to string slice for GenerateTestDetailsURL
@@ -337,8 +335,8 @@ func (c *ComponentReportGenerator) getBaseJobRunTestStatus(
 	ctx context.Context,
 	allJobVariants crtest.JobVariants,
 	baseRelease string,
-	baseStart time.Time,
-	baseEnd time.Time) (map[string][]crstatus.TestJobRunRows, []error) {
+	baseStart civil.Date,
+	baseEnd civil.Date) (map[string][]crstatus.TestJobRunRows, []error) {
 
 	reqOpts := c.ReqOptions
 	reqOpts.BaseRelease.Name = baseRelease
@@ -351,7 +349,7 @@ func (c *ComponentReportGenerator) getSampleJobRunTestStatus(
 	ctx context.Context,
 	allJobVariants crtest.JobVariants,
 	includeVariants map[string][]string,
-	start, end time.Time) (map[string][]crstatus.TestJobRunRows, []error) {
+	start, end civil.Date) (map[string][]crstatus.TestJobRunRows, []error) {
 
 	return c.dataProvider.QuerySampleJobRunTestStatus(ctx, c.ReqOptions, allJobVariants, includeVariants, start, end)
 }
@@ -424,7 +422,7 @@ func (c *ComponentReportGenerator) getJobRunTestStatus(ctx context.Context) (crs
 // breakdown by job as well as overall stats.
 func (c *ComponentReportGenerator) internalGenerateTestDetailsReport(
 	baseRelease string,
-	baseStart, baseEnd *time.Time,
+	baseStart, baseEnd *civil.Date,
 	baseStatus, sampleStatus map[string][]crstatus.TestJobRunRows,
 	testIDOption reqopts.TestIdentification,
 ) testdetails.Report {
@@ -451,9 +449,9 @@ func (c *ComponentReportGenerator) internalGenerateTestDetailsReport(
 			Stats:   totalSample,
 		},
 		BaseStats: &testdetails.ReleaseStats{
-			Release: baseRelease,
-			Start:   baseStart,
-			End:     baseEnd,
+			Release: c.ReqOptions.BaseRelease.Name,
+			Start:   &c.ReqOptions.BaseRelease.Start,
+			End:     &c.ReqOptions.BaseRelease.End,
 			Stats:   totalBase,
 		},
 	}

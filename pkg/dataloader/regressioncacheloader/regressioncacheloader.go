@@ -483,14 +483,12 @@ func (l *RegressionCacheLoader) buildGenerator(
 	testIDOpts []reqopts.TestIdentification,
 ) (*componentreadiness.ComponentReportGenerator, error) {
 
-	baseRelease, err := utils.GetViewReleaseOptions(
-		l.releases, "basis", view.BaseRelease, 0, 0)
+	baseRelease, err := utils.GetViewReleaseOptions(l.releases, "basis", view.BaseRelease)
 	if err != nil {
 		return nil, err
 	}
 
-	sampleRelease, err := utils.GetViewReleaseOptions(
-		l.releases, "sample", view.SampleRelease, cacheOpts.CRTimeRoundingFactor, cacheOpts.CRTimeRoundingOffset)
+	sampleRelease, err := utils.GetViewReleaseOptions(l.releases, "sample", view.SampleRelease)
 	if err != nil {
 		return nil, err
 	}

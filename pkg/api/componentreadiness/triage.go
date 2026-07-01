@@ -836,12 +836,12 @@ func generateTestDetailsURLFromRegression(regression *models.TestRegression, vie
 	}
 
 	// Get base and sample release options from the view
-	baseReleaseOpts, err := utils.GetViewReleaseOptions(releases, "basis", view.BaseRelease, 0, 0)
+	baseReleaseOpts, err := utils.GetViewReleaseOptions(releases, "basis", view.BaseRelease)
 	if err != nil {
 		return "", fmt.Errorf("failed to get base release options: %w", err)
 	}
 
-	sampleReleaseOpts, err := utils.GetViewReleaseOptions(releases, "sample", view.SampleRelease, crTimeRoundingFactor, crTimeRoundingOffset)
+	sampleReleaseOpts, err := utils.GetViewReleaseOptions(releases, "sample", view.SampleRelease)
 	if err != nil {
 		return "", fmt.Errorf("failed to get sample release options: %w", err)
 	}

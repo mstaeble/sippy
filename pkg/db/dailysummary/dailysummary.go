@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	defaultLookbackDays = 14
+	defaultLookbackDays = 90
 	parallelWorkers     = 4
 )
 

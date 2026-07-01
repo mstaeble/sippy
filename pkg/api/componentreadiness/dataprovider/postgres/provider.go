@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/civil"
 	"github.com/lib/pq"
 
 	"github.com/openshift/sippy/pkg/api"
@@ -137,42 +138,6 @@ func (p *PostgresProvider) QueryReleases(ctx context.Context) ([]v1.Release, err
 	return api.GetReleasesFromDB(ctx, p.dbc)
 }
 
-func (p *PostgresProvider) QueryReleaseDates(ctx context.Context, _ reqopts.RequestOptions) ([]crtest.ReleaseTimeRange, []error) {
-	// Derive time ranges from actual data in the DB rather than hardcoded GA dates.
-	// This ensures fallback queries find data where it actually exists.
-	type releaseRange struct {
-		Release string
-		Start   time.Time
-		End     time.Time
-	}
-	var ranges []releaseRange
-	err := p.dbc.DB.WithContext(ctx).Raw(`
-		SELECT pj.release,
-		       MIN(pjr.timestamp) AS start,
-		       MAX(pjr.timestamp) AS end
-		FROM prow_job_runs pjr
-		JOIN prow_jobs pj ON pj.id = pjr.prow_job_id
-		WHERE pj.deleted_at IS NULL AND pjr.deleted_at IS NULL
-		GROUP BY pj.release
-		ORDER BY pj.release DESC
-	`).Scan(&ranges).Error
-	if err != nil {
-		return nil, []error{fmt.Errorf("querying release dates: %w", err)}
-	}
-
-	var dates []crtest.ReleaseTimeRange
-	for _, r := range ranges {
-		start := r.Start
-		end := r.End
-		dates = append(dates, crtest.ReleaseTimeRange{
-			Release: r.Release,
-			Start:   &start,
-			End:     &end,
-		})
-	}
-	return dates, nil
-}
-
 func (p *PostgresProvider) QueryUniqueVariantValues(ctx context.Context, field string, nested bool) ([]string, error) {
 	if nested {
 		// Return all variant key names
@@ -287,7 +252,7 @@ WHERE tow.staff_approved_obsolete = false
 GROUP BY tow.unique_id, t.name, s.name, tow.component, tow.capabilities, d.prow_job_id
 `
 
-func (p *PostgresProvider) queryTestStatus(ctx context.Context, release string, start, end time.Time,
+func (p *PostgresProvider) queryTestStatus(ctx context.Context, release string, start, end civil.Date,
 	_ crtest.JobVariants, includeVariants map[string][]string,
 	dbGroupBy map[string]bool) (map[string]crstatus.TestStatus, []error) {
 
@@ -411,7 +376,7 @@ func (p *PostgresProvider) QueryBaseTestStatus(ctx context.Context, reqOptions r
 func (p *PostgresProvider) QuerySampleTestStatus(ctx context.Context, reqOptions reqopts.RequestOptions,
 	allJobVariants crtest.JobVariants,
 	includeVariants map[string][]string,
-	start, end time.Time) (map[string]crstatus.TestStatus, []error) {
+	start, end civil.Date) (map[string]crstatus.TestStatus, []error) {
 
 	dbGroupBy := make(map[string]bool, reqOptions.VariantOption.DBGroupBy.Len())
 	for _, k := range reqOptions.VariantOption.DBGroupBy.List() {
@@ -476,7 +441,7 @@ WHERE pj.release = ?
 ORDER BY pjr.timestamp
 `
 
-func (p *PostgresProvider) queryTestDetails(ctx context.Context, release string, start, end time.Time,
+func (p *PostgresProvider) queryTestDetails(ctx context.Context, release string, start, end civil.Date,
 	reqOptions reqopts.RequestOptions, _ crtest.JobVariants,
 	includeVariants map[string][]string) (map[string][]crstatus.TestJobRunRows, []error) {
 
@@ -601,7 +566,7 @@ func (p *PostgresProvider) QueryBaseJobRunTestStatus(ctx context.Context, reqOpt
 func (p *PostgresProvider) QuerySampleJobRunTestStatus(ctx context.Context, reqOptions reqopts.RequestOptions,
 	allJobVariants crtest.JobVariants,
 	includeVariants map[string][]string,
-	start, end time.Time) (map[string][]crstatus.TestJobRunRows, []error) {
+	start, end civil.Date) (map[string][]crstatus.TestJobRunRows, []error) {
 
 	return p.queryTestDetails(
 		ctx,
@@ -615,7 +580,7 @@ func (p *PostgresProvider) QuerySampleJobRunTestStatus(ctx context.Context, reqO
 
 func (p *PostgresProvider) QueryJobRuns(ctx context.Context, reqOptions reqopts.RequestOptions,
 	allJobVariants crtest.JobVariants,
-	release string, start, end time.Time) (map[string]dataprovider.JobRunStats, error) {
+	release string, start, end civil.Date) (map[string]dataprovider.JobRunStats, error) {
 
 	type jobRunRow struct {
 		JobName    string `gorm:"column:job_name"`

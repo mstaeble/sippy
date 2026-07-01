@@ -37,14 +37,10 @@ func TestRegressionTracker_PostAnalysis(t *testing.T) {
 	mw := RegressionTracker{
 		reqOptions: reqopts.RequestOptions{
 			BaseRelease: reqopts.Release{
-				Name:  baseRelease,
-				Start: time.Time{},
-				End:   time.Time{},
+				Name: baseRelease,
 			},
 			SampleRelease: reqopts.Release{
-				Name:  sampleRelease,
-				Start: time.Time{},
-				End:   time.Time{},
+				Name: sampleRelease,
 			},
 			AdvancedOption: reqopts.Advanced{
 				Confidence: 95,
@@ -345,14 +341,10 @@ func TestRegressionTracker_PreAnalysis_Adjustments(t *testing.T) {
 			mw := RegressionTracker{
 				reqOptions: reqopts.RequestOptions{
 					BaseRelease: reqopts.Release{
-						Name:  baseRelease,
-						Start: time.Time{},
-						End:   time.Time{},
+						Name: baseRelease,
 					},
 					SampleRelease: reqopts.Release{
-						Name:  sampleRelease,
-						Start: time.Time{},
-						End:   time.Time{},
+						Name: sampleRelease,
 					},
 					AdvancedOption: reqopts.Advanced{
 						Confidence: 95,
@@ -552,14 +544,10 @@ func TestRegressionTracker_PreAnalysis_RegressionMatching(t *testing.T) {
 			mw := RegressionTracker{
 				reqOptions: reqopts.RequestOptions{
 					BaseRelease: reqopts.Release{
-						Name:  baseRelease,
-						Start: time.Time{},
-						End:   time.Time{},
+						Name: baseRelease,
 					},
 					SampleRelease: reqopts.Release{
-						Name:  sampleRelease,
-						Start: time.Time{},
-						End:   time.Time{},
+						Name: sampleRelease,
 					},
 					AdvancedOption: reqopts.Advanced{
 						Confidence: 95,

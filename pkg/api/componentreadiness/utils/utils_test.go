@@ -56,12 +56,12 @@ func TestGenerateTestDetailsURL(t *testing.T) {
 
 	// Helper function to get release options from view
 	getBaseReleaseOpts := func() reqopts.Release {
-		opts, err := GetViewReleaseOptions(releases, "basis", testView.BaseRelease, 0, 0)
+		opts, err := GetViewReleaseOptions(releases, "basis", testView.BaseRelease)
 		require.NoError(t, err)
 		return opts
 	}
 	getSampleReleaseOpts := func() reqopts.Release {
-		opts, err := GetViewReleaseOptions(releases, "sample", testView.SampleRelease, 0, 0)
+		opts, err := GetViewReleaseOptions(releases, "sample", testView.SampleRelease)
 		require.NoError(t, err)
 		return opts
 	}
@@ -246,9 +246,9 @@ func TestGenerateTestDetailsURL(t *testing.T) {
 		}
 
 		// Get release options from the real-world view
-		baseReleaseOpts, err := GetViewReleaseOptions(releases, "basis", realWorldView.BaseRelease, time.Hour, 0)
+		baseReleaseOpts, err := GetViewReleaseOptions(releases, "basis", realWorldView.BaseRelease)
 		require.NoError(t, err)
-		sampleReleaseOpts, err := GetViewReleaseOptions(releases, "sample", realWorldView.SampleRelease, time.Hour, 0)
+		sampleReleaseOpts, err := GetViewReleaseOptions(releases, "sample", realWorldView.SampleRelease)
 		require.NoError(t, err)
 
 		url, err := GenerateTestDetailsURL(
@@ -344,9 +344,9 @@ func TestGenerateTestDetailsURL(t *testing.T) {
 		}
 
 		// Get release options from the view with variants
-		baseReleaseOpts, err := GetViewReleaseOptions(releases, "basis", viewWithVariants.BaseRelease, 0, 0)
+		baseReleaseOpts, err := GetViewReleaseOptions(releases, "basis", viewWithVariants.BaseRelease)
 		require.NoError(t, err)
-		sampleReleaseOpts, err := GetViewReleaseOptions(releases, "sample", viewWithVariants.SampleRelease, 0, 0)
+		sampleReleaseOpts, err := GetViewReleaseOptions(releases, "sample", viewWithVariants.SampleRelease)
 		require.NoError(t, err)
 
 		url, err := GenerateTestDetailsURL(
@@ -417,9 +417,9 @@ func TestGenerateTestDetailsURL(t *testing.T) {
 			},
 		}
 
-		baseReleaseOpts, err := GetViewReleaseOptions(releases, "basis", viewWithCrossCompare.BaseRelease, 0, 0)
+		baseReleaseOpts, err := GetViewReleaseOptions(releases, "basis", viewWithCrossCompare.BaseRelease)
 		require.NoError(t, err)
-		sampleReleaseOpts, err := GetViewReleaseOptions(releases, "sample", viewWithCrossCompare.SampleRelease, 0, 0)
+		sampleReleaseOpts, err := GetViewReleaseOptions(releases, "sample", viewWithCrossCompare.SampleRelease)
 		require.NoError(t, err)
 
 		url, err := GenerateTestDetailsURL(
@@ -461,8 +461,8 @@ func TestGenerateTestDetailsURL(t *testing.T) {
 		// Create a sample release with PR options
 		sampleReleaseWithPR := reqopts.Release{
 			Name:  "4.20",
-			Start: time.Date(2025, 5, 25, 0, 0, 0, 0, time.UTC),
-			End:   time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC),
+			Start: civil.DateOf(time.Date(2025, 5, 25, 0, 0, 0, 0, time.UTC)),
+			End:   civil.DateOf(time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)),
 			PullRequestOptions: &reqopts.PullRequest{
 				Org:      "openshift",
 				Repo:     "origin",
@@ -497,8 +497,8 @@ func TestGenerateTestDetailsURL(t *testing.T) {
 		// Create a sample release with Payload options
 		sampleReleaseWithPayload := reqopts.Release{
 			Name:  "4.20",
-			Start: time.Date(2025, 5, 25, 0, 0, 0, 0, time.UTC),
-			End:   time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC),
+			Start: civil.DateOf(time.Date(2025, 5, 25, 0, 0, 0, 0, time.UTC)),
+			End:   civil.DateOf(time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)),
 			PayloadOptions: &reqopts.Payload{
 				Tags: []string{"tag1", "tag2"},
 			},
@@ -600,10 +600,10 @@ func TestGenerateTestDetailsURL(t *testing.T) {
 		assert.Contains(t, url, "testLifecycles=blocking")
 
 		// Verify the URL contains all expected components from the view
-		assert.Contains(t, url, "baseStartTime=")
-		assert.Contains(t, url, "baseEndTime=")
-		assert.Contains(t, url, "sampleStartTime=")
-		assert.Contains(t, url, "sampleEndTime=")
+		assert.Contains(t, url, "baseStartDate=")
+		assert.Contains(t, url, "baseEndDate=")
+		assert.Contains(t, url, "sampleStartDate=")
+		assert.Contains(t, url, "sampleEndDate=")
 	})
 
 }
