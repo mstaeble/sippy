@@ -397,25 +397,24 @@ FROM (
     ),
     pre_agg AS (
       SELECT
-        pj.variant_combination_id,
-        tds.test_id,
-        tds.suite_id,
-        tds.release AS prow_job_run_release,
-        COALESCE(SUM(tds.successes) FILTER (WHERE tds.summary_date >= |||START||| AND tds.summary_date < |||BOUNDARY|||), 0) AS previous_successes,
-        COALESCE(SUM(tds.flakes)    FILTER (WHERE tds.summary_date >= |||START||| AND tds.summary_date < |||BOUNDARY|||), 0) AS previous_flakes,
-        COALESCE(SUM(tds.failures)  FILTER (WHERE tds.summary_date >= |||START||| AND tds.summary_date < |||BOUNDARY|||), 0) AS previous_failures,
-        COALESCE(SUM(tds.runs)      FILTER (WHERE tds.summary_date >= |||START||| AND tds.summary_date < |||BOUNDARY|||), 0) AS previous_runs,
-        COALESCE(SUM(tds.successes) FILTER (WHERE tds.summary_date >= |||BOUNDARY||| AND tds.summary_date <= |||END|||), 0) AS current_successes,
-        COALESCE(SUM(tds.flakes)    FILTER (WHERE tds.summary_date >= |||BOUNDARY||| AND tds.summary_date <= |||END|||), 0) AS current_flakes,
-        COALESCE(SUM(tds.failures)  FILTER (WHERE tds.summary_date >= |||BOUNDARY||| AND tds.summary_date <= |||END|||), 0) AS current_failures,
-        COALESCE(SUM(tds.runs)      FILTER (WHERE tds.summary_date >= |||BOUNDARY||| AND tds.summary_date <= |||END|||), 0) AS current_runs
+        cds.variant_combination_id,
+        cds.test_id,
+        cds.suite_id,
+        cds.release AS prow_job_run_release,
+        COALESCE(SUM(cds.successes) FILTER (WHERE cds.summary_date >= |||START||| AND cds.summary_date < |||BOUNDARY|||), 0) AS previous_successes,
+        COALESCE(SUM(cds.flakes)    FILTER (WHERE cds.summary_date >= |||START||| AND cds.summary_date < |||BOUNDARY|||), 0) AS previous_flakes,
+        COALESCE(SUM(cds.failures)  FILTER (WHERE cds.summary_date >= |||START||| AND cds.summary_date < |||BOUNDARY|||), 0) AS previous_failures,
+        COALESCE(SUM(cds.runs)      FILTER (WHERE cds.summary_date >= |||START||| AND cds.summary_date < |||BOUNDARY|||), 0) AS previous_runs,
+        COALESCE(SUM(cds.successes) FILTER (WHERE cds.summary_date >= |||BOUNDARY||| AND cds.summary_date <= |||END|||), 0) AS current_successes,
+        COALESCE(SUM(cds.flakes)    FILTER (WHERE cds.summary_date >= |||BOUNDARY||| AND cds.summary_date <= |||END|||), 0) AS current_flakes,
+        COALESCE(SUM(cds.failures)  FILTER (WHERE cds.summary_date >= |||BOUNDARY||| AND cds.summary_date <= |||END|||), 0) AS current_failures,
+        COALESCE(SUM(cds.runs)      FILTER (WHERE cds.summary_date >= |||BOUNDARY||| AND cds.summary_date <= |||END|||), 0) AS current_runs
       FROM
-        test_daily_summaries tds
-        JOIN prow_jobs pj ON tds.prow_job_id = pj.id
+        cr_daily_summaries cds
       WHERE
-        tds.summary_date >= |||START||| AND tds.summary_date <= |||END|||
+        cds.summary_date >= |||START||| AND cds.summary_date <= |||END|||
       GROUP BY
-        pj.variant_combination_id, tds.test_id, tds.suite_id, tds.release
+        cds.variant_combination_id, cds.test_id, cds.suite_id, cds.release
     )
     SELECT
         tests.id,
