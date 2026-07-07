@@ -188,11 +188,11 @@ type TestDailySummary struct {
 // the CR matviews to skip the expensive JOIN to prow_jobs during refresh.
 // Table managed by migration 000005.
 type CRDailySummary struct {
-	TestID               uint      `gorm:"column:test_id;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:1"`
-	SuiteID              uint      `gorm:"column:suite_id;not null;default:0;uniqueIndex:idx_cr_daily_summaries_unique,priority:2"`
-	VariantCombinationID uint      `gorm:"column:variant_combination_id;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:3"`
-	Release              string    `gorm:"column:release;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:4"`
-	SummaryDate          time.Time `gorm:"column:summary_date;type:date;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:5"`
+	TestID               uint      `gorm:"column:test_id;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:3"`
+	SuiteID              uint      `gorm:"column:suite_id;not null;default:0;uniqueIndex:idx_cr_daily_summaries_unique,priority:4"`
+	VariantCombinationID uint      `gorm:"column:variant_combination_id;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:5"`
+	Release              string    `gorm:"column:release;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:1"`
+	SummaryDate          time.Time `gorm:"column:summary_date;type:date;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:2"`
 	Successes            int32     `gorm:"column:successes;not null;default:0"`
 	Failures             int32     `gorm:"column:failures;not null;default:0"`
 	Flakes               int32     `gorm:"column:flakes;not null;default:0"`

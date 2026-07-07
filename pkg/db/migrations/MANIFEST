@@ -11,4 +11,3 @@
 000002_create_test_daily_summaries
 000003_create_variant_combinations
 000004_drop_daily_summary_variant_combination
-000005_create_cr_daily_summaries
