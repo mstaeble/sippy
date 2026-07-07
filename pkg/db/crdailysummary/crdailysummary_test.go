@@ -18,15 +18,19 @@ type fakeStore struct {
 	releasesErr   error
 	aggregateErr  error
 
-	variantChanges     []uint
-	variantChangesErr  error
-	scopedRebuilt      []uint
-	scopedRebuildErr   error
-	vcidMappingUpdated bool
-	vcidMappingErr     error
-	deletedRows        int64
-	deleteErr          error
-	deleteCutoff       time.Time
+	vcidMappingPopulated    bool
+	vcidMappingPopulatedErr error
+	variantChanges          []uint
+	variantChangesErr       error
+	scopedRebuilt           []uint
+	scopedRebuildErr        error
+	totalProwJobs           int64
+	totalProwJobsErr        error
+	vcidMappingUpdated      bool
+	vcidMappingErr          error
+	deletedRows             int64
+	deleteErr               error
+	deleteCutoff            time.Time
 
 	calls []aggregateCall
 }
@@ -58,8 +62,19 @@ func (f *fakeStore) AggregateRangeForRelease(start, end time.Time, release strin
 	return f.aggregateErr
 }
 
+func (f *fakeStore) VCIDMappingPopulated() (bool, error) {
+	return f.vcidMappingPopulated, f.vcidMappingPopulatedErr
+}
+
 func (f *fakeStore) DetectVariantChanges() ([]uint, error) {
 	return f.variantChanges, f.variantChangesErr
+}
+
+func (f *fakeStore) TotalProwJobCount() (int64, error) {
+	if f.totalProwJobs == 0 {
+		return 10000, f.totalProwJobsErr
+	}
+	return f.totalProwJobs, f.totalProwJobsErr
 }
 
 func (f *fakeStore) ScopedRebuild(changedProwJobIDs []uint) error {
@@ -79,7 +94,7 @@ func (f *fakeStore) DeleteOldRows(cutoff time.Time) (int64, error) {
 
 func TestRefresh_Incremental(t *testing.T) {
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
-	store := &fakeStore{maxSummary: &maxDate}
+	store := &fakeStore{maxSummary: &maxDate, vcidMappingPopulated: true}
 
 	err := refreshSummaries(store, Options{})
 
@@ -92,7 +107,7 @@ func TestRefresh_Incremental(t *testing.T) {
 
 func TestRefresh_IncrementalCapsAtYesterday(t *testing.T) {
 	future := time.Now().AddDate(0, 0, 1)
-	store := &fakeStore{maxSummary: &future}
+	store := &fakeStore{maxSummary: &future, vcidMappingPopulated: true}
 
 	err := refreshSummaries(store, Options{})
 
@@ -132,7 +147,7 @@ func TestRefresh_RebuildTruncatesAndSkipsVariantDetection(t *testing.T) {
 
 func TestRefresh_IncrementalUsesUpsert(t *testing.T) {
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
-	store := &fakeStore{maxSummary: &maxDate}
+	store := &fakeStore{maxSummary: &maxDate, vcidMappingPopulated: true}
 
 	err := refreshSummaries(store, Options{})
 
@@ -147,7 +162,7 @@ func TestRefresh_DateOverrides(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
-	store := &fakeStore{maxSummary: &maxDate}
+	store := &fakeStore{maxSummary: &maxDate, vcidMappingPopulated: true}
 
 	err := refreshSummaries(store, Options{StartOverride: &start, EndOverride: &end})
 
@@ -160,8 +175,9 @@ func TestRefresh_DateOverrides(t *testing.T) {
 func TestRefresh_VariantChangesDetected(t *testing.T) {
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
 	store := &fakeStore{
-		maxSummary:     &maxDate,
-		variantChanges: []uint{101, 202, 303},
+		maxSummary:           &maxDate,
+		vcidMappingPopulated: true,
+		variantChanges:       []uint{101, 202, 303},
 	}
 
 	err := refreshSummaries(store, Options{})
@@ -174,8 +190,9 @@ func TestRefresh_VariantChangesDetected(t *testing.T) {
 func TestRefresh_NoVariantChanges(t *testing.T) {
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
 	store := &fakeStore{
-		maxSummary:     &maxDate,
-		variantChanges: []uint{},
+		maxSummary:           &maxDate,
+		vcidMappingPopulated: true,
+		variantChanges:       []uint{},
 	}
 
 	err := refreshSummaries(store, Options{})
@@ -186,7 +203,7 @@ func TestRefresh_NoVariantChanges(t *testing.T) {
 
 func TestRefresh_OldRowsCleanedUp(t *testing.T) {
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
-	store := &fakeStore{maxSummary: &maxDate, deletedRows: 42}
+	store := &fakeStore{maxSummary: &maxDate, vcidMappingPopulated: true, deletedRows: 42}
 
 	err := refreshSummaries(store, Options{})
 
@@ -207,7 +224,7 @@ func TestRefresh_TruncateError(t *testing.T) {
 
 func TestRefresh_VariantDetectionError(t *testing.T) {
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
-	store := &fakeStore{maxSummary: &maxDate, variantChangesErr: fmt.Errorf("connection refused")}
+	store := &fakeStore{maxSummary: &maxDate, vcidMappingPopulated: true, variantChangesErr: fmt.Errorf("connection refused")}
 
 	err := refreshSummaries(store, Options{})
 
@@ -218,9 +235,10 @@ func TestRefresh_VariantDetectionError(t *testing.T) {
 func TestRefresh_ScopedRebuildError(t *testing.T) {
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
 	store := &fakeStore{
-		maxSummary:       &maxDate,
-		variantChanges:   []uint{1},
-		scopedRebuildErr: fmt.Errorf("disk full"),
+		maxSummary:           &maxDate,
+		vcidMappingPopulated: true,
+		variantChanges:       []uint{1},
+		scopedRebuildErr:     fmt.Errorf("disk full"),
 	}
 
 	err := refreshSummaries(store, Options{})
@@ -231,7 +249,7 @@ func TestRefresh_ScopedRebuildError(t *testing.T) {
 
 func TestRefresh_VCIDMappingError(t *testing.T) {
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
-	store := &fakeStore{maxSummary: &maxDate, vcidMappingErr: fmt.Errorf("connection refused")}
+	store := &fakeStore{maxSummary: &maxDate, vcidMappingPopulated: true, vcidMappingErr: fmt.Errorf("connection refused")}
 
 	err := refreshSummaries(store, Options{})
 
@@ -250,12 +268,48 @@ func TestRefresh_ReleasesError(t *testing.T) {
 
 func TestRefresh_AggregateError(t *testing.T) {
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
-	store := &fakeStore{maxSummary: &maxDate, aggregateErr: fmt.Errorf("disk full")}
+	store := &fakeStore{maxSummary: &maxDate, vcidMappingPopulated: true, aggregateErr: fmt.Errorf("disk full")}
 
 	err := refreshSummaries(store, Options{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "aggregating release")
+}
+
+func TestRefresh_VariantChangesExceedThresholdTruncates(t *testing.T) {
+	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
+	changes := make([]uint, 2500)
+	for i := range changes {
+		changes[i] = uint(i + 1)
+	}
+	store := &fakeStore{
+		maxSummary:           &maxDate,
+		vcidMappingPopulated: true,
+		variantChanges:       changes,
+		totalProwJobs:        10000,
+	}
+
+	err := refreshSummaries(store, Options{})
+
+	require.NoError(t, err)
+	assert.True(t, store.truncated)
+	assert.Nil(t, store.scopedRebuilt)
+}
+
+func TestRefresh_VariantChangesBelowThresholdUsesScoped(t *testing.T) {
+	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
+	store := &fakeStore{
+		maxSummary:           &maxDate,
+		vcidMappingPopulated: true,
+		variantChanges:       []uint{1, 2, 3},
+		totalProwJobs:        10000,
+	}
+
+	err := refreshSummaries(store, Options{})
+
+	require.NoError(t, err)
+	assert.False(t, store.truncated)
+	assert.Equal(t, []uint{1, 2, 3}, store.scopedRebuilt)
 }
 
 func TestRefresh_NoReleases(t *testing.T) {

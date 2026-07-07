@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	defaultLookbackDays = 95
-	retentionDays       = 95
+	defaultLookbackDays    = 95
+	retentionDays          = 95
+	scopedRebuildThreshold = 0.20
 )
 
 var valueColumns = []string{"successes", "failures", "flakes", "runs"}
@@ -69,7 +70,9 @@ type summaryStore interface {
 	AggregateRangeForRelease(start, end time.Time, release string, skipConflictDetection bool) error
 	DetectVariantChanges() ([]uint, error)
 	ScopedRebuild(changedProwJobIDs []uint) error
+	TotalProwJobCount() (int64, error)
 	UpdateVCIDMapping() error
+	VCIDMappingPopulated() (bool, error)
 	DeleteOldRows(cutoff time.Time) (int64, error)
 }
 
@@ -104,15 +107,37 @@ func refreshSummaries(store summaryStore, opts Options) error {
 			return fmt.Errorf("truncating table: %w", err)
 		}
 	} else {
-		changes, err := store.DetectVariantChanges()
+		populated, err := store.VCIDMappingPopulated()
 		if err != nil {
-			return fmt.Errorf("detecting variant changes: %w", err)
+			return fmt.Errorf("checking VCID mapping: %w", err)
 		}
-		if len(changes) > 0 {
-			log.WithField("count", len(changes)).Info("variant changes detected, doing scoped rebuild")
-			if err := store.ScopedRebuild(changes); err != nil {
-				return fmt.Errorf("scoped rebuild for variant changes: %w", err)
+		if populated {
+			changes, err := store.DetectVariantChanges()
+			if err != nil {
+				return fmt.Errorf("detecting variant changes: %w", err)
 			}
+			if len(changes) > 0 {
+				total, err := store.TotalProwJobCount()
+				if err != nil {
+					return fmt.Errorf("counting prow jobs: %w", err)
+				}
+				if total > 0 && float64(len(changes))/float64(total) > scopedRebuildThreshold {
+					log.WithFields(log.Fields{
+						"changed": len(changes),
+						"total":   total,
+					}).Info("variant changes exceed threshold, truncating for full rebuild")
+					if err := store.Truncate(); err != nil {
+						return fmt.Errorf("truncating table: %w", err)
+					}
+				} else {
+					log.WithField("count", len(changes)).Info("variant changes detected, doing scoped rebuild")
+					if err := store.ScopedRebuild(changes); err != nil {
+						return fmt.Errorf("scoped rebuild for variant changes: %w", err)
+					}
+				}
+			}
+		} else {
+			log.Info("VCID mapping empty (first run), skipping variant detection")
 		}
 	}
 
@@ -233,6 +258,18 @@ func (s *pgStore) AggregateRangeForRelease(startDate, endDate time.Time, release
 		sql += onConflictClause
 	}
 	return s.dbc.DB.Exec(sql, startDate, endDate, release).Error
+}
+
+func (s *pgStore) VCIDMappingPopulated() (bool, error) {
+	var count int64
+	err := s.dbc.DB.Table("cr_vcid_mappings").Count(&count).Error
+	return count > 0, err
+}
+
+func (s *pgStore) TotalProwJobCount() (int64, error) {
+	var count int64
+	err := s.dbc.DB.Table("prow_jobs").Where("variant_combination_id IS NOT NULL").Count(&count).Error
+	return count, err
 }
 
 func (s *pgStore) DetectVariantChanges() ([]uint, error) {
