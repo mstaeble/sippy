@@ -183,6 +183,30 @@ type TestDailySummary struct {
 	Runs        int32     `gorm:"column:runs;not null;default:0"`
 }
 
+// CRDailySummary pre-aggregates test_daily_summaries by variant_combination_id
+// (collapsing many prow_job_ids into fewer variant combinations). This enables
+// the CR matviews to skip the expensive JOIN to prow_jobs during refresh.
+// Table managed by migration 000005.
+type CRDailySummary struct {
+	TestID               uint      `gorm:"column:test_id;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:1"`
+	SuiteID              uint      `gorm:"column:suite_id;not null;default:0;uniqueIndex:idx_cr_daily_summaries_unique,priority:2"`
+	VariantCombinationID uint      `gorm:"column:variant_combination_id;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:3"`
+	Release              string    `gorm:"column:release;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:4"`
+	SummaryDate          time.Time `gorm:"column:summary_date;type:date;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:5"`
+	Successes            int32     `gorm:"column:successes;not null;default:0"`
+	Failures             int32     `gorm:"column:failures;not null;default:0"`
+	Flakes               int32     `gorm:"column:flakes;not null;default:0"`
+	Runs                 int32     `gorm:"column:runs;not null;default:0"`
+}
+
+// CRVCIDMapping tracks the prow_job_id to variant_combination_id mapping
+// so the CR daily summary refresh can detect when variants change and do
+// a scoped rebuild of only the affected rows.
+type CRVCIDMapping struct {
+	ProwJobID            uint `gorm:"column:prow_job_id;primaryKey"`
+	VariantCombinationID uint `gorm:"column:variant_combination_id;not null"`
+}
+
 // ProwGARawTestDatum stores raw BigQuery test results for GA release windows.
 // Fetched once per GA date and persisted so that the aggregation into
 // prow_ga_test_statuses_matview can be re-run cheaply when dimension tables change.

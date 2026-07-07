@@ -172,6 +172,8 @@ func (d *DB) UpdateSchema(reportEnd *time.Time) error {
 		&jobrunscan.Label{},
 		&jobrunscan.Symptom{},
 		&models.TestDailySummary{},
+		&models.CRDailySummary{},
+		&models.CRVCIDMapping{},
 	}
 
 	// Currently we need RunMigrations to run prior

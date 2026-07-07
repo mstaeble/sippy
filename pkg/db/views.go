@@ -568,17 +568,16 @@ ORDER BY pjrt.id DESC
 
 const crTestStatusMatView = `
 SELECT
-    tds.test_id,
-    tds.suite_id,
-    pj.variant_combination_id,
-    tds.release,
-    SUM(tds.runs)::int AS total_count,
-    SUM(tds.successes + tds.flakes)::int AS success_count,
-    SUM(tds.flakes)::int AS flake_count
-FROM test_daily_summaries tds
-JOIN prow_jobs pj ON tds.prow_job_id = pj.id
-WHERE tds.summary_date >= |||START||| AND tds.summary_date < |||END|||
-GROUP BY tds.test_id, tds.suite_id, pj.variant_combination_id, tds.release
+    cds.test_id,
+    cds.suite_id,
+    cds.variant_combination_id,
+    cds.release,
+    SUM(cds.runs)::int AS total_count,
+    SUM(cds.successes + cds.flakes)::int AS success_count,
+    SUM(cds.flakes)::int AS flake_count
+FROM cr_daily_summaries cds
+WHERE cds.summary_date >= |||START||| AND cds.summary_date < |||END|||
+GROUP BY cds.test_id, cds.suite_id, cds.variant_combination_id, cds.release
 `
 
 const gaTestStatusMatView = `

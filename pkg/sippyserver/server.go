@@ -55,6 +55,7 @@ import (
 	sippyv1 "github.com/openshift/sippy/pkg/apis/sippy/v1"
 	sippybq "github.com/openshift/sippy/pkg/bigquery"
 	"github.com/openshift/sippy/pkg/db"
+	"github.com/openshift/sippy/pkg/db/crdailysummary"
 	"github.com/openshift/sippy/pkg/db/dailysummary"
 	"github.com/openshift/sippy/pkg/db/models"
 	"github.com/openshift/sippy/pkg/db/query"
@@ -150,6 +151,12 @@ var dailySummaryRefreshMetric = promauto.NewHistogram(prometheus.HistogramOpts{
 	Name:    "sippy_daily_summary_refresh_millis",
 	Help:    "Milliseconds to refresh the daily summary table",
 	Buckets: []float64{1000, 5000, 10000, 30000, 60000, 300000, 600000, 1200000},
+})
+
+var crDailySummaryRefreshMetric = promauto.NewHistogram(prometheus.HistogramOpts{
+	Name:    "sippy_cr_daily_summary_refresh_millis",
+	Help:    "Milliseconds to refresh the CR daily summary table",
+	Buckets: []float64{100, 500, 1000, 5000, 10000, 30000, 60000, 300000, 600000},
 })
 
 var matViewUniqueNumberOfTests = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -400,6 +407,19 @@ func RefreshData(dbc *db.DB, cacheClient cache.Cache, refreshMatviewsOnlyIfEmpty
 	} else {
 		dailySummaryRefreshMetric.Observe(float64(time.Since(summaryStart).Milliseconds()))
 	}
+
+	crStart := time.Now()
+	crOpts := crdailysummary.Options{
+		Rebuild:       dailySummaryOpts.Rebuild,
+		StartOverride: dailySummaryOpts.StartOverride,
+		EndOverride:   dailySummaryOpts.EndOverride,
+	}
+	if err := crdailysummary.Refresh(dbc, crOpts); err != nil {
+		log.WithError(err).Error("failed to refresh CR daily summaries")
+	} else {
+		crDailySummaryRefreshMetric.Observe(float64(time.Since(crStart).Milliseconds()))
+	}
+
 	refreshMaterializedViews(dbc, cacheClient, refreshMatviewsOnlyIfEmpty)
 	log.Info("Refresh complete")
 }
