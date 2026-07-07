@@ -14,9 +14,8 @@ type fakeStore struct {
 	maxSummaryErr error
 	truncated     bool
 	truncateErr   error
-	releases      []string
-	releasesErr   error
 	aggregateErr  error
+	aggregated    bool
 
 	vcidMappingPopulated    bool
 	vcidMappingPopulatedErr error
@@ -32,13 +31,9 @@ type fakeStore struct {
 	deleteErr               error
 	deleteCutoff            time.Time
 
-	calls []aggregateCall
-}
-
-type aggregateCall struct {
-	start, end            time.Time
-	release               string
-	skipConflictDetection bool
+	aggregateStart        time.Time
+	aggregateEnd          time.Time
+	aggregateSkipConflict bool
 }
 
 func (f *fakeStore) MaxSummaryDate() (*time.Time, error) {
@@ -50,15 +45,11 @@ func (f *fakeStore) Truncate() error {
 	return f.truncateErr
 }
 
-func (f *fakeStore) Releases() ([]string, error) {
-	if f.releases != nil {
-		return f.releases, f.releasesErr
-	}
-	return []string{"4.22", "5.0"}, f.releasesErr
-}
-
-func (f *fakeStore) AggregateRangeForRelease(start, end time.Time, release string, skipConflictDetection bool) error {
-	f.calls = append(f.calls, aggregateCall{start: start, end: end, release: release, skipConflictDetection: skipConflictDetection})
+func (f *fakeStore) AggregateRange(start, end time.Time, skipConflictDetection bool) error {
+	f.aggregated = true
+	f.aggregateStart = start
+	f.aggregateEnd = end
+	f.aggregateSkipConflict = skipConflictDetection
 	return f.aggregateErr
 }
 
@@ -99,7 +90,7 @@ func TestRefresh_Incremental(t *testing.T) {
 	err := refreshSummaries(store, Options{})
 
 	require.NoError(t, err)
-	assert.Len(t, store.calls, 2)
+	assert.True(t, store.aggregated)
 	assert.False(t, store.truncated)
 	assert.True(t, store.vcidMappingUpdated)
 	assert.Nil(t, store.scopedRebuilt)
@@ -112,8 +103,8 @@ func TestRefresh_IncrementalCapsAtYesterday(t *testing.T) {
 	err := refreshSummaries(store, Options{})
 
 	require.NoError(t, err)
-	require.NotEmpty(t, store.calls)
-	assert.True(t, store.calls[0].start.Before(future))
+	assert.True(t, store.aggregated)
+	assert.True(t, store.aggregateStart.Before(future))
 }
 
 func TestRefresh_EmptyTableUsesDefaultLookbackAndSkipsConflictDetection(t *testing.T) {
@@ -122,12 +113,10 @@ func TestRefresh_EmptyTableUsesDefaultLookbackAndSkipsConflictDetection(t *testi
 	err := refreshSummaries(store, Options{})
 
 	require.NoError(t, err)
-	require.NotEmpty(t, store.calls)
-	daysBefore := time.Since(store.calls[0].start).Hours() / 24
+	assert.True(t, store.aggregated)
+	daysBefore := time.Since(store.aggregateStart).Hours() / 24
 	assert.InDelta(t, defaultLookbackDays, daysBefore, 1)
-	for _, call := range store.calls {
-		assert.True(t, call.skipConflictDetection)
-	}
+	assert.True(t, store.aggregateSkipConflict)
 }
 
 func TestRefresh_RebuildTruncatesAndSkipsVariantDetection(t *testing.T) {
@@ -137,12 +126,10 @@ func TestRefresh_RebuildTruncatesAndSkipsVariantDetection(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.True(t, store.truncated)
-	assert.Len(t, store.calls, 2)
+	assert.True(t, store.aggregated)
 	assert.True(t, store.vcidMappingUpdated)
 	assert.Nil(t, store.scopedRebuilt)
-	for _, call := range store.calls {
-		assert.True(t, call.skipConflictDetection)
-	}
+	assert.True(t, store.aggregateSkipConflict)
 }
 
 func TestRefresh_IncrementalUsesUpsert(t *testing.T) {
@@ -152,10 +139,8 @@ func TestRefresh_IncrementalUsesUpsert(t *testing.T) {
 	err := refreshSummaries(store, Options{})
 
 	require.NoError(t, err)
-	assert.Len(t, store.calls, 2)
-	for _, call := range store.calls {
-		assert.False(t, call.skipConflictDetection)
-	}
+	assert.True(t, store.aggregated)
+	assert.False(t, store.aggregateSkipConflict)
 }
 
 func TestRefresh_DateOverrides(t *testing.T) {
@@ -167,9 +152,9 @@ func TestRefresh_DateOverrides(t *testing.T) {
 	err := refreshSummaries(store, Options{StartOverride: &start, EndOverride: &end})
 
 	require.NoError(t, err)
-	require.Len(t, store.calls, 2)
-	assert.Equal(t, start, store.calls[0].start)
-	assert.Equal(t, end, store.calls[0].end)
+	assert.True(t, store.aggregated)
+	assert.Equal(t, start, store.aggregateStart)
+	assert.Equal(t, end, store.aggregateEnd)
 }
 
 func TestRefresh_VariantChangesDetected(t *testing.T) {
@@ -219,7 +204,7 @@ func TestRefresh_TruncateError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "truncating table")
-	assert.Empty(t, store.calls)
+	assert.False(t, store.aggregated)
 }
 
 func TestRefresh_VariantDetectionError(t *testing.T) {
@@ -257,15 +242,6 @@ func TestRefresh_VCIDMappingError(t *testing.T) {
 	assert.Contains(t, err.Error(), "updating VCID mapping")
 }
 
-func TestRefresh_ReleasesError(t *testing.T) {
-	store := &fakeStore{releasesErr: fmt.Errorf("connection refused")}
-
-	err := refreshSummaries(store, Options{})
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "querying releases")
-}
-
 func TestRefresh_AggregateError(t *testing.T) {
 	maxDate := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
 	store := &fakeStore{maxSummary: &maxDate, vcidMappingPopulated: true, aggregateErr: fmt.Errorf("disk full")}
@@ -273,7 +249,7 @@ func TestRefresh_AggregateError(t *testing.T) {
 	err := refreshSummaries(store, Options{})
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "aggregating release")
+	assert.Contains(t, err.Error(), "aggregating CR daily summaries")
 }
 
 func TestRefresh_VariantChangesExceedThresholdTruncates(t *testing.T) {
@@ -310,13 +286,4 @@ func TestRefresh_VariantChangesBelowThresholdUsesScoped(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, store.truncated)
 	assert.Equal(t, []uint{1, 2, 3}, store.scopedRebuilt)
-}
-
-func TestRefresh_NoReleases(t *testing.T) {
-	store := &fakeStore{releases: []string{}}
-
-	err := refreshSummaries(store, Options{})
-
-	require.NoError(t, err)
-	assert.Empty(t, store.calls)
 }

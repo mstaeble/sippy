@@ -40,7 +40,6 @@ func buildInsertSQL() string {
 		JOIN prow_jobs pj ON tds.prow_job_id = pj.id
 		WHERE tds.summary_date >= ?::date
 		  AND tds.summary_date < (?::date + INTERVAL '1 day')
-		  AND tds.release = ?
 		  AND pj.variant_combination_id IS NOT NULL
 		GROUP BY tds.test_id, tds.suite_id, pj.variant_combination_id, tds.release, tds.summary_date`,
 		strings.Join(valueColumns, ", "))
@@ -66,8 +65,7 @@ func buildOnConflictClause() string {
 type summaryStore interface {
 	MaxSummaryDate() (*time.Time, error)
 	Truncate() error
-	Releases() ([]string, error)
-	AggregateRangeForRelease(start, end time.Time, release string, skipConflictDetection bool) error
+	AggregateRange(start, end time.Time, skipConflictDetection bool) error
 	DetectVariantChanges() ([]uint, error)
 	ScopedRebuild(changedProwJobIDs []uint) error
 	TotalProwJobCount() (int64, error)
@@ -141,15 +139,6 @@ func refreshSummaries(store summaryStore, opts Options) error {
 		}
 	}
 
-	if err := store.UpdateVCIDMapping(); err != nil {
-		return fmt.Errorf("updating VCID mapping: %w", err)
-	}
-
-	releases, err := store.Releases()
-	if err != nil {
-		return fmt.Errorf("querying releases: %w", err)
-	}
-
 	skipConflictDetection := opts.Rebuild
 	if !skipConflictDetection {
 		maxDate, err := store.MaxSummaryDate()
@@ -164,11 +153,12 @@ func refreshSummaries(store summaryStore, opts Options) error {
 		"end":   endDate.Format("2006-01-02"),
 	}).Info("aggregating CR daily summaries")
 
-	for _, release := range releases {
-		if err := store.AggregateRangeForRelease(startDate, endDate, release, skipConflictDetection); err != nil {
-			return fmt.Errorf("aggregating release %s: %w", release, err)
-		}
-		log.WithField("release", release).Debug("aggregated CR daily summary for release")
+	if err := store.AggregateRange(startDate, endDate, skipConflictDetection); err != nil {
+		return fmt.Errorf("aggregating CR daily summaries: %w", err)
+	}
+
+	if err := store.UpdateVCIDMapping(); err != nil {
+		return fmt.Errorf("updating VCID mapping: %w", err)
 	}
 
 	cutoff := now.AddDate(0, 0, -retentionDays)
@@ -246,18 +236,12 @@ func (s *pgStore) Truncate() error {
 	return s.dbc.DB.Exec("TRUNCATE cr_vcid_mappings").Error
 }
 
-func (s *pgStore) Releases() ([]string, error) {
-	var releases []string
-	err := s.dbc.DB.Table("prow_jobs").Distinct("release").Pluck("release", &releases).Error
-	return releases, err
-}
-
-func (s *pgStore) AggregateRangeForRelease(startDate, endDate time.Time, release string, skipConflictDetection bool) error {
+func (s *pgStore) AggregateRange(startDate, endDate time.Time, skipConflictDetection bool) error {
 	sql := insertSQL
 	if !skipConflictDetection {
 		sql += onConflictClause
 	}
-	return s.dbc.DB.Exec(sql, startDate, endDate, release).Error
+	return s.dbc.DB.Exec(sql, startDate, endDate).Error
 }
 
 func (s *pgStore) VCIDMappingPopulated() (bool, error) {
