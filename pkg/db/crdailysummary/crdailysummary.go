@@ -1,8 +1,10 @@
 package crdailysummary
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -13,6 +15,7 @@ import (
 const (
 	defaultLookbackDays    = 95
 	retentionDays          = 95
+	parallelWorkers        = 4
 	scopedRebuildThreshold = 0.20
 )
 
@@ -40,6 +43,7 @@ func buildInsertSQL() string {
 		JOIN prow_jobs pj ON tds.prow_job_id = pj.id
 		WHERE tds.summary_date >= ?::date
 		  AND tds.summary_date < (?::date + INTERVAL '1 day')
+		  AND tds.release = ?
 		  AND pj.variant_combination_id IS NOT NULL
 		GROUP BY tds.test_id, tds.suite_id, pj.variant_combination_id, tds.release, tds.summary_date`,
 		strings.Join(valueColumns, ", "))
@@ -54,7 +58,7 @@ func buildOnConflictClause() string {
 	}
 
 	return fmt.Sprintf(`
-		ON CONFLICT (test_id, suite_id, variant_combination_id, release, summary_date)
+		ON CONFLICT (release, summary_date, test_id, suite_id, variant_combination_id)
 		DO UPDATE SET %s
 		WHERE (%s) IS DISTINCT FROM (%s)`,
 		strings.Join(setClauses, ", "),
@@ -65,7 +69,8 @@ func buildOnConflictClause() string {
 type summaryStore interface {
 	MaxSummaryDate() (*time.Time, error)
 	Truncate() error
-	AggregateRange(start, end time.Time, skipConflictDetection bool) error
+	Releases() ([]string, error)
+	AggregateRangeForRelease(start, end time.Time, release string, skipConflictDetection bool) error
 	DetectVariantChanges() ([]uint, error)
 	ScopedRebuild(changedProwJobIDs []uint) error
 	TotalProwJobCount() (int64, error)
@@ -139,6 +144,11 @@ func refreshSummaries(store summaryStore, opts Options) error {
 		}
 	}
 
+	releases, err := store.Releases()
+	if err != nil {
+		return fmt.Errorf("querying releases: %w", err)
+	}
+
 	skipConflictDetection := opts.Rebuild
 	if !skipConflictDetection {
 		maxDate, err := store.MaxSummaryDate()
@@ -153,8 +163,8 @@ func refreshSummaries(store summaryStore, opts Options) error {
 		"end":   endDate.Format("2006-01-02"),
 	}).Info("aggregating CR daily summaries")
 
-	if err := store.AggregateRange(startDate, endDate, skipConflictDetection); err != nil {
-		return fmt.Errorf("aggregating CR daily summaries: %w", err)
+	if err := aggregateReleases(store, releases, startDate, endDate, skipConflictDetection); err != nil {
+		return err
 	}
 
 	if err := store.UpdateVCIDMapping(); err != nil {
@@ -172,6 +182,39 @@ func refreshSummaries(store summaryStore, opts Options) error {
 
 	log.WithField("elapsed", time.Since(loadStart)).Info("CR daily summary refresh complete")
 	return nil
+}
+
+func aggregateReleases(store summaryStore, releases []string, startDate, endDate time.Time, skipConflictDetection bool) error {
+	errs := make(chan error, len(releases))
+	work := make(chan string, len(releases))
+
+	var wg sync.WaitGroup
+	for range parallelWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for release := range work {
+				if err := store.AggregateRangeForRelease(startDate, endDate, release, skipConflictDetection); err != nil {
+					errs <- fmt.Errorf("aggregating release %s: %w", release, err)
+					continue
+				}
+				log.WithField("release", release).Debug("aggregated CR daily summary for release")
+			}
+		}()
+	}
+
+	for _, release := range releases {
+		work <- release
+	}
+	close(work)
+	wg.Wait()
+	close(errs)
+
+	var combined []error
+	for err := range errs {
+		combined = append(combined, err)
+	}
+	return errors.Join(combined...)
 }
 
 func dateRange(store summaryStore, opts Options, now time.Time) (time.Time, time.Time, error) {
@@ -236,12 +279,18 @@ func (s *pgStore) Truncate() error {
 	return s.dbc.DB.Exec("TRUNCATE cr_vcid_mappings").Error
 }
 
-func (s *pgStore) AggregateRange(startDate, endDate time.Time, skipConflictDetection bool) error {
+func (s *pgStore) Releases() ([]string, error) {
+	var releases []string
+	err := s.dbc.DB.Table("prow_jobs").Distinct("release").Pluck("release", &releases).Error
+	return releases, err
+}
+
+func (s *pgStore) AggregateRangeForRelease(startDate, endDate time.Time, release string, skipConflictDetection bool) error {
 	sql := insertSQL
 	if !skipConflictDetection {
 		sql += onConflictClause
 	}
-	return s.dbc.DB.Exec(sql, startDate, endDate).Error
+	return s.dbc.DB.Exec(sql, startDate, endDate, release).Error
 }
 
 func (s *pgStore) VCIDMappingPopulated() (bool, error) {
@@ -297,7 +346,7 @@ func (s *pgStore) ScopedRebuild(changedProwJobIDs []uint) error {
 			AND tds.summary_date = at.summary_date
 		WHERE pj.variant_combination_id IS NOT NULL
 		GROUP BY tds.test_id, tds.suite_id, pj.variant_combination_id, tds.release, tds.summary_date
-		ON CONFLICT (test_id, suite_id, variant_combination_id, release, summary_date)
+		ON CONFLICT (release, summary_date, test_id, suite_id, variant_combination_id)
 		DO UPDATE SET
 			successes = EXCLUDED.successes,
 			failures  = EXCLUDED.failures,
