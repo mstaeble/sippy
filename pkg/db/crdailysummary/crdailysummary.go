@@ -281,7 +281,9 @@ func (s *pgStore) Truncate() error {
 
 func (s *pgStore) Releases() ([]string, error) {
 	var releases []string
-	err := s.dbc.DB.Table("prow_jobs").Distinct("release").Pluck("release", &releases).Error
+	err := s.dbc.DB.Table("release_definitions").
+		Order("major DESC, minor DESC").
+		Pluck("release", &releases).Error
 	return releases, err
 }
 
