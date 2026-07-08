@@ -58,6 +58,7 @@ import (
 	"github.com/openshift/sippy/pkg/db/crdailysummary"
 	"github.com/openshift/sippy/pkg/db/dailysummary"
 	"github.com/openshift/sippy/pkg/db/models"
+	"github.com/openshift/sippy/pkg/db/prefixsum"
 	"github.com/openshift/sippy/pkg/db/query"
 	"github.com/openshift/sippy/pkg/filter"
 	"github.com/openshift/sippy/pkg/synthetictests"
@@ -156,6 +157,12 @@ var dailySummaryRefreshMetric = promauto.NewHistogram(prometheus.HistogramOpts{
 var crDailySummaryRefreshMetric = promauto.NewHistogram(prometheus.HistogramOpts{
 	Name:    "sippy_cr_daily_summary_refresh_millis",
 	Help:    "Milliseconds to refresh the CR daily summary table",
+	Buckets: []float64{100, 500, 1000, 5000, 10000, 30000, 60000, 300000, 600000},
+})
+
+var prefixSumRefreshMetric = promauto.NewHistogram(prometheus.HistogramOpts{
+	Name:    "sippy_prefix_sum_refresh_millis",
+	Help:    "Milliseconds to refresh the prefix sum table",
 	Buckets: []float64{100, 500, 1000, 5000, 10000, 30000, 60000, 300000, 600000},
 })
 
@@ -418,6 +425,13 @@ func RefreshData(dbc *db.DB, cacheClient cache.Cache, refreshMatviewsOnlyIfEmpty
 		log.WithError(err).Error("failed to refresh CR daily summaries")
 	} else {
 		crDailySummaryRefreshMetric.Observe(float64(time.Since(crStart).Milliseconds()))
+	}
+
+	psStart := time.Now()
+	if err := prefixsum.Refresh(dbc, prefixsum.Options{Rebuild: dailySummaryOpts.Rebuild}); err != nil {
+		log.WithError(err).Error("failed to refresh prefix sums")
+	} else {
+		prefixSumRefreshMetric.Observe(float64(time.Since(psStart).Milliseconds()))
 	}
 
 	refreshMaterializedViews(dbc, cacheClient, refreshMatviewsOnlyIfEmpty)

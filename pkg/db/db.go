@@ -175,6 +175,7 @@ func (d *DB) UpdateSchema(reportEnd *time.Time) error {
 		&models.TestDailySummary{},
 		&models.CRDailySummary{},
 		&models.CRVCIDMapping{},
+		&models.PrefixSum{},
 	}
 
 	// Currently we need RunMigrations to run prior

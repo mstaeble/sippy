@@ -165,6 +165,12 @@ var PostgresMatViews = []PostgresView{
 			"|||SOURCE|||": "cr_test_status_60d_30d_matview",
 		},
 	},
+	{
+		Name:         "cr_variant_prefix_sums_matview",
+		Definition:   variantPrefixSumsMatView,
+		IndexColumns: []string{"summary_date", "test_id", "suite_id", "variant_combination_id", "release"},
+		RefreshPhase: 1,
+	},
 }
 
 // PostgresViews are regular, non-materialized views:
@@ -593,6 +599,18 @@ JOIN tests t ON t.name = raw.test_name
 JOIN prow_jobs pj ON pj.name = raw.job_name AND pj.deleted_at IS NULL AND pj.variant_combination_id IS NOT NULL
 LEFT JOIN suites s ON s.name = raw.suite
 GROUP BY t.id, COALESCE(s.id, 0), pj.variant_combination_id, raw.release
+`
+
+const variantPrefixSumsMatView = `
+SELECT ps.summary_date, ps.test_id, ps.suite_id, pj.variant_combination_id, ps.release,
+    SUM(ps.cum_successes)::bigint AS cum_successes,
+    SUM(ps.cum_failures)::bigint AS cum_failures,
+    SUM(ps.cum_flakes)::bigint AS cum_flakes,
+    SUM(ps.cum_runs)::bigint AS cum_runs
+FROM prefix_sums ps
+JOIN prow_jobs pj ON ps.prow_job_id = pj.id
+WHERE pj.variant_combination_id IS NOT NULL
+GROUP BY ps.summary_date, ps.test_id, ps.suite_id, pj.variant_combination_id, ps.release
 `
 
 const crCellGridMatView = `

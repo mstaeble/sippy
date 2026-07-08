@@ -206,6 +206,22 @@ type CRVCIDMapping struct {
 	VariantCombinationID uint `gorm:"column:variant_combination_id;not null"`
 }
 
+// PrefixSum stores cumulative totals of test_daily_summaries values, ordered
+// by date. Any date range [start, end] can be computed as
+// prefix_sum(end) - prefix_sum(start-1). Keyed by immutable fields only
+// (no variant_combination_id) so variant changes do not invalidate the data.
+type PrefixSum struct {
+	Release      string    `gorm:"column:release;not null;primaryKey;priority:1"`
+	SummaryDate  time.Time `gorm:"column:summary_date;type:date;not null;primaryKey;priority:2;index:idx_prefix_sums_date"`
+	TestID       uint      `gorm:"column:test_id;not null;primaryKey;priority:3"`
+	ProwJobID    uint      `gorm:"column:prow_job_id;not null;primaryKey;priority:4"`
+	SuiteID      uint      `gorm:"column:suite_id;not null;default:0;primaryKey;priority:5"`
+	CumSuccesses int64     `gorm:"column:cum_successes;not null;default:0"`
+	CumFailures  int64     `gorm:"column:cum_failures;not null;default:0"`
+	CumFlakes    int64     `gorm:"column:cum_flakes;not null;default:0"`
+	CumRuns      int64     `gorm:"column:cum_runs;not null;default:0"`
+}
+
 // ProwGARawTestDatum stores raw BigQuery test results for GA release windows.
 // Fetched once per GA date and persisted so that the aggregation into
 // prow_ga_test_statuses_matview can be re-run cheaply when dimension tables change.
