@@ -87,7 +87,7 @@ var PostgresMatViews = []PostgresView{
 		Name:         "cr_test_status_7d_matview",
 		Definition:   crTestStatusMatView,
 		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
-		RefreshPhase: 1,
+		RefreshPhase: 2,
 		ReplaceStrings: map[string]string{
 			"|||START|||": "CURRENT_DATE - 7",
 			"|||END|||":   "CURRENT_DATE + 1",
@@ -97,7 +97,7 @@ var PostgresMatViews = []PostgresView{
 		Name:         "cr_test_status_30d_matview",
 		Definition:   crTestStatusMatView,
 		IndexColumns: []string{"release", "test_id", "suite_id", "variant_combination_id"},
-		RefreshPhase: 1,
+		RefreshPhase: 2,
 		ReplaceStrings: map[string]string{
 			"|||START|||": "CURRENT_DATE - 30",
 			"|||END|||":   "CURRENT_DATE + 1",
@@ -133,7 +133,7 @@ var PostgresMatViews = []PostgresView{
 		Name:         "cr_cell_grid_7d_matview",
 		Definition:   crCellGridMatView,
 		IndexColumns: []string{"release", "component", "variant_combination_id"},
-		RefreshPhase: 2,
+		RefreshPhase: 3,
 		ReplaceStrings: map[string]string{
 			"|||SOURCE|||": "cr_test_status_7d_matview",
 		},
@@ -142,7 +142,7 @@ var PostgresMatViews = []PostgresView{
 		Name:         "cr_cell_grid_30d_matview",
 		Definition:   crCellGridMatView,
 		IndexColumns: []string{"release", "component", "variant_combination_id"},
-		RefreshPhase: 2,
+		RefreshPhase: 3,
 		ReplaceStrings: map[string]string{
 			"|||SOURCE|||": "cr_test_status_30d_matview",
 		},
@@ -572,17 +572,18 @@ ORDER BY pjrt.id DESC
 `
 
 const crTestStatusMatView = `
-SELECT
-    cds.test_id,
-    cds.suite_id,
-    cds.variant_combination_id,
-    cds.release,
-    SUM(cds.runs)::int AS total_count,
-    SUM(cds.successes + cds.flakes)::int AS success_count,
-    SUM(cds.flakes)::int AS flake_count
-FROM cr_daily_summaries cds
-WHERE cds.summary_date >= |||START||| AND cds.summary_date < |||END|||
-GROUP BY cds.test_id, cds.suite_id, cds.variant_combination_id, cds.release
+SELECT e.test_id, e.suite_id, e.variant_combination_id, e.release,
+    (e.cum_runs - COALESCE(s.cum_runs, 0))::int AS total_count,
+    ((e.cum_successes + e.cum_flakes) - COALESCE(s.cum_successes + s.cum_flakes, 0))::int AS success_count,
+    (e.cum_flakes - COALESCE(s.cum_flakes, 0))::int AS flake_count
+FROM cr_variant_prefix_sums_matview e
+LEFT JOIN cr_variant_prefix_sums_matview s
+    ON e.test_id = s.test_id
+    AND e.suite_id = s.suite_id
+    AND e.variant_combination_id = s.variant_combination_id
+    AND e.release = s.release
+    AND s.summary_date = |||START||| - 1
+WHERE e.summary_date = |||END||| - 1
 `
 
 const gaTestStatusMatView = `

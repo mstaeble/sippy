@@ -83,10 +83,14 @@ func refreshPrefixSums(store summaryStore, opts Options) error {
 		}).Info("updating prefix sums")
 
 		for date := startDate; !date.After(endDate); date = date.AddDate(0, 0, 1) {
+			dayStart := time.Now()
 			if err := store.UpdateDay(date); err != nil {
 				return fmt.Errorf("updating prefix sums for %s: %w", date.Format("2006-01-02"), err)
 			}
-			log.WithField("date", date.Format("2006-01-02")).Debug("updated prefix sums for date")
+			log.WithFields(log.Fields{
+				"date":    date.Format("2006-01-02"),
+				"elapsed": time.Since(dayStart),
+			}).Debug("updated prefix sums for date")
 		}
 	}
 
@@ -135,23 +139,21 @@ func (s *pgStore) UpdateDay(date time.Time) error {
 		INSERT INTO prefix_sums (summary_date, test_id, prow_job_id, suite_id, release,
 		                         cum_successes, cum_failures, cum_flakes, cum_runs)
 		SELECT
-			tds.summary_date,
-			tds.test_id,
-			tds.prow_job_id,
-			tds.suite_id,
-			tds.release,
-			COALESCE(prev.cum_successes, 0) + tds.successes,
-			COALESCE(prev.cum_failures, 0) + tds.failures,
-			COALESCE(prev.cum_flakes, 0) + tds.flakes,
-			COALESCE(prev.cum_runs, 0) + tds.runs
-		FROM test_daily_summaries tds
-		LEFT JOIN prefix_sums prev
-			ON tds.test_id = prev.test_id
-			AND tds.prow_job_id = prev.prow_job_id
-			AND tds.suite_id = prev.suite_id
-			AND tds.release = prev.release
-			AND prev.summary_date = tds.summary_date - 1
-		WHERE tds.summary_date = ?
+			?::date,
+			COALESCE(prev.test_id, tds.test_id),
+			COALESCE(prev.prow_job_id, tds.prow_job_id),
+			COALESCE(prev.suite_id, tds.suite_id),
+			COALESCE(prev.release, tds.release),
+			COALESCE(prev.cum_successes, 0) + COALESCE(tds.successes, 0),
+			COALESCE(prev.cum_failures, 0) + COALESCE(tds.failures, 0),
+			COALESCE(prev.cum_flakes, 0) + COALESCE(tds.flakes, 0),
+			COALESCE(prev.cum_runs, 0) + COALESCE(tds.runs, 0)
+		FROM (SELECT * FROM prefix_sums WHERE summary_date = ?::date - 1) prev
+		FULL OUTER JOIN (SELECT * FROM test_daily_summaries WHERE summary_date = ?::date) tds
+			ON prev.test_id = tds.test_id
+			AND prev.prow_job_id = tds.prow_job_id
+			AND prev.suite_id = tds.suite_id
+			AND prev.release = tds.release
 		ON CONFLICT (release, summary_date, test_id, prow_job_id, suite_id)
 		DO UPDATE SET
 			cum_successes = EXCLUDED.cum_successes,
@@ -163,7 +165,7 @@ func (s *pgStore) UpdateDay(date time.Time) error {
 		   IS DISTINCT FROM
 		      (EXCLUDED.cum_successes, EXCLUDED.cum_failures,
 		       EXCLUDED.cum_flakes, EXCLUDED.cum_runs)
-	`, date).Error
+	`, date, date, date).Error
 }
 
 func (s *pgStore) DeleteOldRows(cutoff time.Time) (int64, error) {
