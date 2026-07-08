@@ -55,7 +55,6 @@ import (
 	sippyv1 "github.com/openshift/sippy/pkg/apis/sippy/v1"
 	sippybq "github.com/openshift/sippy/pkg/bigquery"
 	"github.com/openshift/sippy/pkg/db"
-	"github.com/openshift/sippy/pkg/db/crdailysummary"
 	"github.com/openshift/sippy/pkg/db/dailysummary"
 	"github.com/openshift/sippy/pkg/db/models"
 	"github.com/openshift/sippy/pkg/db/prefixsum"
@@ -415,23 +414,19 @@ func RefreshData(dbc *db.DB, cacheClient cache.Cache, refreshMatviewsOnlyIfEmpty
 		dailySummaryRefreshMetric.Observe(float64(time.Since(summaryStart).Milliseconds()))
 	}
 
-	crStart := time.Now()
-	crOpts := crdailysummary.Options{
-		Rebuild:       dailySummaryOpts.Rebuild,
-		StartOverride: dailySummaryOpts.StartOverride,
-		EndOverride:   dailySummaryOpts.EndOverride,
-	}
-	if err := crdailysummary.Refresh(dbc, crOpts); err != nil {
-		log.WithError(err).Error("failed to refresh CR daily summaries")
-	} else {
-		crDailySummaryRefreshMetric.Observe(float64(time.Since(crStart).Milliseconds()))
-	}
-
 	psStart := time.Now()
-	if err := prefixsum.Refresh(dbc, prefixsum.Options{Rebuild: dailySummaryOpts.Rebuild}); err != nil {
+	psOpts := prefixsum.Options{Rebuild: dailySummaryOpts.Rebuild}
+	if err := prefixsum.Refresh(dbc, psOpts); err != nil {
 		log.WithError(err).Error("failed to refresh prefix sums")
 	} else {
 		prefixSumRefreshMetric.Observe(float64(time.Since(psStart).Milliseconds()))
+	}
+
+	vpStart := time.Now()
+	if err := prefixsum.RefreshVariantPrefixSums(dbc, psOpts); err != nil {
+		log.WithError(err).Error("failed to refresh variant prefix sums")
+	} else {
+		crDailySummaryRefreshMetric.Observe(float64(time.Since(vpStart).Milliseconds()))
 	}
 
 	refreshMaterializedViews(dbc, cacheClient, refreshMatviewsOnlyIfEmpty)

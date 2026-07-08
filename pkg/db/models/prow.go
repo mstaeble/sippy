@@ -183,19 +183,20 @@ type TestDailySummary struct {
 	Runs        int32     `gorm:"column:runs;not null;default:0"`
 }
 
-// CRDailySummary pre-aggregates test_daily_summaries by variant_combination_id
-// (collapsing many prow_job_ids into fewer variant combinations). This enables
-// the CR matviews to skip the expensive JOIN to prow_jobs during refresh.
-type CRDailySummary struct {
-	TestID               uint      `gorm:"column:test_id;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:3"`
-	SuiteID              uint      `gorm:"column:suite_id;not null;default:0;uniqueIndex:idx_cr_daily_summaries_unique,priority:4"`
-	VariantCombinationID uint      `gorm:"column:variant_combination_id;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:5"`
-	Release              string    `gorm:"column:release;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:1"`
-	SummaryDate          time.Time `gorm:"column:summary_date;type:date;not null;uniqueIndex:idx_cr_daily_summaries_unique,priority:2;index:idx_cr_daily_summaries_date"`
-	Successes            int32     `gorm:"column:successes;not null;default:0"`
-	Failures             int32     `gorm:"column:failures;not null;default:0"`
-	Flakes               int32     `gorm:"column:flakes;not null;default:0"`
-	Runs                 int32     `gorm:"column:runs;not null;default:0"`
+// CRVariantPrefixSum stores cumulative totals of prefix_sums grouped by
+// variant_combination_id. Updated daily by grouping one day's prefix_sums
+// and inserting. Variant changes detected via CRVCIDMapping trigger a
+// scoped rebuild from prefix_sums for affected entities.
+type CRVariantPrefixSum struct {
+	Release              string    `gorm:"column:release;not null;uniqueIndex:idx_cr_variant_prefix_sums_unique,priority:1"`
+	SummaryDate          time.Time `gorm:"column:summary_date;type:date;not null;uniqueIndex:idx_cr_variant_prefix_sums_unique,priority:2;index:idx_cr_variant_prefix_sums_date"`
+	TestID               uint      `gorm:"column:test_id;not null;uniqueIndex:idx_cr_variant_prefix_sums_unique,priority:3"`
+	SuiteID              uint      `gorm:"column:suite_id;not null;default:0;uniqueIndex:idx_cr_variant_prefix_sums_unique,priority:4"`
+	VariantCombinationID uint      `gorm:"column:variant_combination_id;not null;uniqueIndex:idx_cr_variant_prefix_sums_unique,priority:5"`
+	CumSuccesses         int64     `gorm:"column:cum_successes;not null;default:0"`
+	CumFailures          int64     `gorm:"column:cum_failures;not null;default:0"`
+	CumFlakes            int64     `gorm:"column:cum_flakes;not null;default:0"`
+	CumRuns              int64     `gorm:"column:cum_runs;not null;default:0"`
 }
 
 // CRVCIDMapping tracks the prow_job_id to variant_combination_id mapping

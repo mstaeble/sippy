@@ -174,7 +174,7 @@ func (d *DB) UpdateSchema(reportEnd *time.Time) error {
 		&jobrunscan.Label{},
 		&jobrunscan.Symptom{},
 		&models.TestDailySummary{},
-		&models.CRDailySummary{},
+		&models.CRVariantPrefixSum{},
 		&models.CRVCIDMapping{},
 		&models.PrefixSum{},
 	}
