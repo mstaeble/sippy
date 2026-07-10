@@ -126,7 +126,7 @@ func NewServeCommand() *cobra.Command {
 				}
 				bigQueryClient, err = f.BigQueryFlags.GetBigQueryClient(context.Background(), opCtx, cacheClient, f.GoogleCloudFlags.ServiceAccountCredentialFile)
 				if err != nil {
-					return errors.WithMessage(err, "couldn't get bigquery client")
+					log.WithError(err).Warn("couldn't get bigquery client, BigQuery-dependent features will be unavailable")
 				}
 
 				if bigQueryClient != nil && f.CacheFlags.EnablePersistentCaching {
@@ -274,9 +274,12 @@ func newDataProvider(name string, bigQueryClient *bigquery.Client, dbc *db.DB, c
 		if bigQueryClient != nil {
 			return bqprovider.NewBigQueryProvider(bigQueryClient), nil
 		}
-		return nil, nil
+		return nil, fmt.Errorf("bigquery data provider requires google-service-account-credential-file to be configured")
 
 	case "postgres":
+		if dbc == nil {
+			return nil, fmt.Errorf("postgres data provider requires a database connection")
+		}
 		log.Info("Using Postgres data provider for component readiness")
 		return pgprovider.NewPostgresProvider(dbc, cacheClient), nil
 
