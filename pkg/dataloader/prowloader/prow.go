@@ -259,6 +259,8 @@ func (pl *ProwLoader) Load() {
 		pl.errors = append(pl.errors, errors.Wrap(err, "error pre-fetching labels from BigQuery"))
 	}
 
+	pl.jobsImportedCount.Store(int32(len(prowJobs)))
+
 	// Match jobs to releases and bulk-upsert ProwJob definitions before
 	// the concurrent processing loop. The prowJobCache is read-only after
 	// this point.
@@ -306,8 +308,7 @@ func (pl *ProwLoader) Load() {
 				if result != nil {
 					results <- result
 				}
-				pl.jobsImportedCount.Add(1)
-				log.Infof("%d of %d job runs processed", pl.jobsImportedCount.Load(), total)
+				log.Infof("%d of %d job runs fetched", pl.jobsProcessedCount.Load(), total)
 			}
 		}(fetchCtx)
 	}
