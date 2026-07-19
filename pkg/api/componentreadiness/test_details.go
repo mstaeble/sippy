@@ -160,7 +160,7 @@ func (c *ComponentReportGenerator) GenerateTestDetailsReportMultiTest(ctx contex
 			TestID:   tOpt.TestID,
 			Variants: tOpt.RequestedVariants,
 		}
-		testKeyStr := testKey.KeyOrDie()
+		testKeyStr := testKey.Encode()
 		if statuses, ok := testKeyTestJobRunStatuses[testKeyStr]; ok {
 			report, generateReportErrs := c.GenerateDetailsReportForTest(ctx, tOpt, statuses, false)
 			if len(generateReportErrs) > 0 {
@@ -186,16 +186,14 @@ func (c *ComponentReportGenerator) GenerateDetailsReportForTest(
 ) (testdetails.Report, []error) {
 
 	if testIDOption.TestID == "" {
-		return testdetails.Report{}, []error{&api.ValidationError{
-			Message: "test_id has to be defined for test details",
-		}}
+		return testdetails.Report{}, []error{fmt.Errorf("test_id has to be defined for test details")}
 	}
 	for _, v := range sets.List(c.ReqOptions.VariantOption.DBGroupBy) {
 		if _, ok := testIDOption.RequestedVariants[v]; !ok {
-			return testdetails.Report{}, []error{&api.ValidationError{
-				Message: fmt.Sprintf("all dbGroupBy variants have to be defined for test details: %s is missing in %v",
+			return testdetails.Report{}, []error{
+				fmt.Errorf("all dbGroupBy variants have to be defined for test details: %s is missing in %v",
 					v, testIDOption.RequestedVariants),
-			}}
+			}
 		}
 	}
 

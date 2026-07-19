@@ -16,6 +16,7 @@ import {
 } from './CompReadyUtils'
 import { ReleasesContext } from '../App'
 import { safeEncodeURIComponent, SafeStringParam } from '../helpers'
+import { useCookies } from 'react-cookie'
 import CompReadyProgress from './CompReadyProgress'
 import PropTypes from 'prop-types'
 import React, { createContext, useContext, useEffect, useState } from 'react'
@@ -133,6 +134,12 @@ export const CompReadyVarsProvider = ({ children }) => {
   // Find the most recent GA releases
   const { defaultBaseRelease, defaultSampleRelease, getReleaseDate } =
     gaReleaseInfo(useContext(ReleasesContext))
+
+  // Read the app-wide BQ/PG toggle cookie to route CR queries
+  const [cookies] = useCookies(['testTableDBSource'])
+  const dataSource =
+    cookies['testTableDBSource'] === 'postgres' ? 'postgres' : ''
+
   const days = 24 * 60 * 60 * 1000
   const seconds = 1000
   const now = new Date()
@@ -225,6 +232,7 @@ export const CompReadyVarsProvider = ({ children }) => {
   const [flakeAsFailure, setFlakeAsFailure] = React.useState(false)
   const [includeMultiReleaseAnalysis, setIncludeMultiReleaseAnalysis] =
     React.useState(false)
+
   /******************************************************************************
    * Parameters that are used to refine the query as the user drills down into CR
    ****************************************************************************** */
@@ -450,7 +458,8 @@ export const CompReadyVarsProvider = ({ children }) => {
   }
 
   useEffect(() => {
-    const jobVariantsAPIURL = getJobVariantsAPIUrl()
+    const dsParam = dataSource ? `?dataSource=${dataSource}` : ''
+    const jobVariantsAPIURL = getJobVariantsAPIUrl() + dsParam
     const viewsAPIURL = getComponentReadinessViewsAPIUrl()
     Promise.all([fetch(jobVariantsAPIURL), fetch(viewsAPIURL)])
       .then(([variantsResp, viewsResp]) => {
@@ -501,7 +510,7 @@ export const CompReadyVarsProvider = ({ children }) => {
         // Mark the attempt as finished whether successful or not.
         setIsLoaded(true)
       })
-  }, [])
+  }, [dataSource])
 
   const shouldLoadDefaultView = () => {
     // Attempt to decide if we should pre-select the default view, or if we were given params:
@@ -620,6 +629,7 @@ export const CompReadyVarsProvider = ({ children }) => {
         setFlakeAsFailure,
         includeMultiReleaseAnalysis,
         setIncludeMultiReleaseAnalysis,
+        dataSource,
         component,
         capability,
         environment,

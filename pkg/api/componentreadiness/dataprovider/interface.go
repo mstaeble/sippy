@@ -34,7 +34,7 @@ type TestDetailsQuerier interface {
 // MetadataQuerier fetches reference data used to configure and parameterize reports.
 type MetadataQuerier interface {
 	// QueryJobVariants returns all variant names and their possible values.
-	QueryJobVariants(ctx context.Context) (crtest.JobVariants, []error)
+	QueryJobVariants(ctx context.Context, reqOptions reqopts.RequestOptions) (crtest.JobVariants, []error)
 
 	// QueryReleaseDates returns the time ranges for each known release.
 	QueryReleaseDates(ctx context.Context, reqOptions reqopts.RequestOptions) ([]crtest.ReleaseTimeRange, []error)

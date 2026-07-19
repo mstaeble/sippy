@@ -51,7 +51,7 @@ func (p *BigQueryProvider) Cache() apiCache.Cache {
 // --- TestStatusQuerier ---
 
 func (p *BigQueryProvider) QueryBaseTestStatus(ctx context.Context, reqOptions reqopts.RequestOptions) (map[string]crstatus.TestStatus, []error) {
-	allJobVariants, errs := p.QueryJobVariants(ctx)
+	allJobVariants, errs := p.QueryJobVariants(ctx, reqOptions)
 	if len(errs) > 0 {
 		return nil, errs
 	}
@@ -70,7 +70,7 @@ func (p *BigQueryProvider) QueryBaseTestStatus(ctx context.Context, reqOptions r
 func (p *BigQueryProvider) QuerySampleTestStatus(ctx context.Context, reqOptions reqopts.RequestOptions,
 	includeVariants map[string][]string,
 	start, end time.Time) (map[string]crstatus.TestStatus, []error) {
-	allJobVariants, errs := p.QueryJobVariants(ctx)
+	allJobVariants, errs := p.QueryJobVariants(ctx, reqOptions)
 	if len(errs) > 0 {
 		return nil, errs
 	}
@@ -89,7 +89,7 @@ func (p *BigQueryProvider) QuerySampleTestStatus(ctx context.Context, reqOptions
 // --- TestDetailsQuerier ---
 
 func (p *BigQueryProvider) QueryBaseJobRunTestStatus(ctx context.Context, reqOptions reqopts.RequestOptions) (map[string][]crstatus.TestJobRunRows, []error) {
-	allJobVariants, errs := p.QueryJobVariants(ctx)
+	allJobVariants, errs := p.QueryJobVariants(ctx, reqOptions)
 	if len(errs) > 0 {
 		return nil, errs
 	}
@@ -113,7 +113,7 @@ func (p *BigQueryProvider) QueryBaseJobRunTestStatus(ctx context.Context, reqOpt
 func (p *BigQueryProvider) QuerySampleJobRunTestStatus(ctx context.Context, reqOptions reqopts.RequestOptions,
 	includeVariants map[string][]string,
 	start, end time.Time) (map[string][]crstatus.TestJobRunRows, []error) {
-	allJobVariants, errs := p.QueryJobVariants(ctx)
+	allJobVariants, errs := p.QueryJobVariants(ctx, reqOptions)
 	if len(errs) > 0 {
 		return nil, errs
 	}
@@ -135,7 +135,7 @@ type jobVariantsCacheKey struct {
 	Dataset string
 }
 
-func (p *BigQueryProvider) QueryJobVariants(ctx context.Context) (crtest.JobVariants, []error) {
+func (p *BigQueryProvider) QueryJobVariants(ctx context.Context, _ reqopts.RequestOptions) (crtest.JobVariants, []error) {
 	return apiPkg.GetDataFromCacheOrGenerate[crtest.JobVariants](
 		ctx, p.client.Cache, apiCache.RequestOptions{},
 		apiPkg.NewCacheSpec(jobVariantsCacheKey{Dataset: p.client.Dataset}, "BQJobVariants~", nil),
@@ -226,7 +226,7 @@ func (p *BigQueryProvider) QueryUniqueVariantValues(ctx context.Context, field s
 
 func (p *BigQueryProvider) QueryJobRuns(ctx context.Context, reqOptions reqopts.RequestOptions,
 	release string, start, end time.Time) (map[string]dataprovider.JobRunStats, error) {
-	allJobVariants, errs := p.QueryJobVariants(ctx)
+	allJobVariants, errs := p.QueryJobVariants(ctx, reqOptions)
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("fetching job variants: %w", errors.Join(errs...))
 	}

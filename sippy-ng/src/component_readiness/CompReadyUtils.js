@@ -461,6 +461,10 @@ export function getUpdatedUrlParts(vars) {
     //component: vars.component,
   }
 
+  if (vars.dataSource) {
+    valuesMap.dataSource = vars.dataSource
+  }
+
   if (vars.samplePROrg && vars.samplePRRepo && vars.samplePRNumber) {
     valuesMap.samplePROrg = vars.samplePROrg
     valuesMap.samplePRRepo = vars.samplePRRepo

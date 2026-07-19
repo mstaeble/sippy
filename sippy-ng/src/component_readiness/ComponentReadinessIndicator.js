@@ -15,6 +15,7 @@ import { getTestDetailsLink } from './CompReadyUtils'
 import { Link } from 'react-router-dom'
 import { makeStyles } from '@mui/styles'
 import { relativeTime } from '../helpers'
+import { useCookies } from 'react-cookie'
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward'
 import Grid from '@mui/material/Grid'
 import HealingIcon from '@mui/icons-material/Healing'
@@ -57,13 +58,18 @@ export default function ComponentReadinessIndicator({ release }) {
   const classes = useStyles()
   const [regressions, setRegressions] = useState(null)
   const [isLoaded, setIsLoaded] = useState(false)
+  const [cookies] = useCookies(['testTableDBSource'])
+  const dataSource =
+    cookies['testTableDBSource'] === 'postgres' ? 'postgres' : ''
 
   useEffect(() => {
     const viewName = `${release}-main`
+    const dsParam = dataSource ? `&dataSource=${dataSource}` : ''
     const componentReportUrl =
       process.env.REACT_APP_API_URL +
       '/api/component_readiness?view=' +
-      encodeURIComponent(viewName)
+      encodeURIComponent(viewName) +
+      dsParam
 
     // Fetch both the component report and triages
     const componentReportPromise = fetch(componentReportUrl)
@@ -158,7 +164,7 @@ export default function ComponentReadinessIndicator({ release }) {
       .catch(() => {
         setIsLoaded(true)
       })
-  }, [release])
+  }, [release, dataSource])
 
   const getSeverityColor = (count, thresholds) => {
     if (count <= thresholds.success) return theme.palette.success.main

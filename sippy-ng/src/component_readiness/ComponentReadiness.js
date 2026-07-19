@@ -310,6 +310,9 @@ export default function ComponentReadiness(props) {
 
     if (varsContext.view != null && varsContext.view !== '') {
       apiCallStr += '?view=' + varsContext.view
+      if (varsContext.dataSource) {
+        apiCallStr += '&dataSource=' + varsContext.dataSource
+      }
     } else {
       apiCallStr += getUpdatedUrlParts(varsContext)
     }
