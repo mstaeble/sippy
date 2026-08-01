@@ -155,41 +155,21 @@ func (l *PRMergeSyncLoader) Backfill(batchSize, pause, limit int) error {
 	}
 
 	query := l.unmatchedPRs().
-		Select("DISTINCT p.org, p.repo, p.number").
-		Order("p.org, p.repo, p.number")
+		Select("p.org, p.repo, p.number").
+		Group("p.org, p.repo, p.number").
+		Order("MIN(p.id)")
 	if limit > 0 {
 		query = query.Limit(limit)
 	}
 
-	var rawPRs []prKey
-	if err := query.Scan(&rawPRs).Error; err != nil {
+	var prs []prKey
+	if err := query.Scan(&prs).Error; err != nil {
 		return fmt.Errorf("querying unmerged PRs: %w", err)
 	}
 
-	log.WithField("count", len(rawPRs)).Info("unmerged PRs to check")
-	if len(rawPRs) == 0 {
+	log.WithField("count", len(prs)).Info("unmerged PRs to check")
+	if len(prs) == 0 {
 		return nil
-	}
-
-	// Round-robin interleave across repos so we don't hammer a single repo
-	// and trigger GitHub's secondary rate limits.
-	type orgRepo struct{ Org, Repo string }
-	grouped := make(map[orgRepo][]prKey)
-	for _, pr := range rawPRs {
-		key := orgRepo{pr.Org, pr.Repo}
-		grouped[key] = append(grouped[key], pr)
-	}
-	buckets := make([][]prKey, 0, len(grouped))
-	for _, group := range grouped {
-		buckets = append(buckets, group)
-	}
-	prs := make([]prKey, 0, len(rawPRs))
-	for round := 0; len(prs) < len(rawPRs); round++ {
-		for _, bucket := range buckets {
-			if round < len(bucket) {
-				prs = append(prs, bucket[round])
-			}
-		}
 	}
 
 	sqlDB, err := l.dbc.DB.DB()
