@@ -218,9 +218,11 @@ func (l *PRMergeSyncLoader) Backfill(batchSize, pause, limit int) error {
 
 		var merged []mergedPR
 		rateLimited := false
+		repoHits := make(map[string]int)
 
 		for _, pr := range batch {
 			stats.processed++
+			repoHits[pr.Org+"/"+pr.Repo]++
 			entry, err := l.ghClient.GetPREntry(pr.Org, pr.Repo, pr.Number)
 			if err != nil {
 				if l.ghClient.IsWithinRateLimitThreshold() {
@@ -271,6 +273,7 @@ func (l *PRMergeSyncLoader) Backfill(batchSize, pause, limit int) error {
 			"deleted":   stats.deleted,
 			"not_found": stats.notFound,
 			"errors":    stats.errors,
+			"repos_hit": repoHits,
 		}).Info("batch complete")
 
 		if rateLimited {
