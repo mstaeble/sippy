@@ -223,6 +223,18 @@ func (l *PRMergeSyncLoader) Backfill(batchSize, pause, limit int) error {
 				continue
 			}
 			if entry.MergedAt != nil && entry.SHA != "" {
+				var dbSHAs []string
+				l.dbc.DB.Table("prow_pull_requests").
+					Where("org = ? AND repo = ? AND number = ? AND merged_at IS NULL", pr.Org, pr.Repo, pr.Number).
+					Pluck("sha", &dbSHAs)
+				log.WithFields(log.Fields{
+					"org":        pr.Org,
+					"repo":       pr.Repo,
+					"number":     pr.Number,
+					"github_sha": entry.SHA,
+					"db_shas":    dbSHAs,
+				}).Info("merged PR SHA comparison")
+
 				merged = append(merged, mergedPR{
 					org:      pr.Org,
 					repo:     pr.Repo,
@@ -253,7 +265,7 @@ func (l *PRMergeSyncLoader) Backfill(batchSize, pause, limit int) error {
 			"deleted":   stats.deleted,
 			"not_found": stats.notFound,
 			"errors":    stats.errors,
-			"repos_hit": repoHits,
+			"repos_hit": len(repoHits),
 		}).Info("batch complete")
 
 		if rateLimited {
