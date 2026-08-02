@@ -110,6 +110,8 @@ func fetchInformingRuns(ctx context.Context, bqClient *bqcachedclient.Client, da
 		JOIN %[1]s.jobs ON junit.prowjob_build_id = jobs.prowjob_build_id
 		WHERE junit.modified_time >= DATETIME(@start_date)
 		  AND junit.modified_time < DATETIME(@end_date)
+		  AND junit.release IS NOT NULL
+		  AND jobs.prowjob_start IS NOT NULL
 		  AND COALESCE(NULLIF(junit.lifecycle, ''), 'blocking') = 'informing'
 		  AND junit.skipped = false
 	`, bqClient.Dataset))
