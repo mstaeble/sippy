@@ -41,6 +41,7 @@ func main() {
 		NewRefreshCommand(),
 		NewBackfillCommand(),
 		NewBackfillPRStatusCommand(),
+		NewBackfillLifecycleCommand(),
 		NewComponentReadinessCommand(),
 		NewAutomateJiraCommand(),
 		NewVariantsCommand(),
