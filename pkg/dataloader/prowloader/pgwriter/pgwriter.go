@@ -211,13 +211,16 @@ func Write(ctx context.Context, dbc *db.DB, currentDate civil.Date, batch []JobR
 		defer cleanup()
 	}
 
-	log.WithField("elapsed", time.Since(copyStart)).Debug("copied batch to temp tables")
+	copyDuration := time.Since(copyStart)
+	log.WithField("elapsed", copyDuration).Debug("copied batch to temp tables")
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	sqlStart := time.Now()
 
 	if err := insertJobRuns(ctx, tx); err != nil {
 		return err
@@ -231,24 +234,36 @@ func Write(ctx context.Context, dbc *db.DB, currentDate civil.Date, batch []JobR
 	if err := insertPRAssociations(ctx, tx, len(prAssocs)); err != nil {
 		return err
 	}
+	var testsDuration, summaryDuration time.Duration
 	if len(tests) > 0 {
+		testsStart := time.Now()
 		if err := insertTestResults(ctx, tx); err != nil {
 			return err
 		}
+		testsDuration = time.Since(testsStart)
+
+		summaryStart := time.Now()
 		if err := upsertSummaryTables(ctx, tx, currentDate); err != nil {
 			return err
 		}
+		summaryDuration = time.Since(summaryStart)
 	}
 
-	stepStart := time.Now()
+	commitStart := time.Now()
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing job run batch: %w", err)
 	}
-	log.WithField("elapsed", time.Since(stepStart)).Debug("committed transaction")
+	commitDuration := time.Since(commitStart)
+	log.WithField("elapsed", commitDuration).Debug("committed transaction")
 
 	log.WithFields(log.Fields{
-		"runs":  len(batch),
-		"tests": len(tests),
+		"runs":     len(batch),
+		"tests":    len(tests),
+		"copy":     copyDuration,
+		"insTests": testsDuration,
+		"summary":  summaryDuration,
+		"commit":   commitDuration,
+		"totalSQL": time.Since(sqlStart),
 	}).Info("job run batch committed")
 
 	return nil
@@ -341,26 +356,31 @@ func insertTestResults(ctx context.Context, tx pgx.Tx) error {
 		return fmt.Errorf("ensuring suites exist: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
-		WITH inserted AS (
-			INSERT INTO prow_job_run_tests (prow_job_run_id, prow_job_id, prow_job_run_timestamp,
-				prow_job_run_release, test_id, suite_id, status, duration, lifecycle, created_at, updated_at)
+		WITH test_map AS (
 			SELECT tmp.prow_job_run_id, tmp.prow_job_id, tmp.prow_job_run_timestamp,
-				tmp.prow_job_run_release, t.id, s.id, tmp.status, tmp.duration, tmp.lifecycle, NOW(), NOW()
+				tmp.prow_job_run_release, tmp.status, tmp.duration, tmp.lifecycle, tmp.output,
+				t.id AS test_id, s.id AS suite_id
 			FROM tmp_job_run_tests tmp
 			INNER JOIN tests t ON t.name = tmp.test_name AND t.deleted_at IS NULL
 			LEFT JOIN suites s ON s.name = tmp.suite_name AND s.deleted_at IS NULL
+		),
+		inserted AS (
+			INSERT INTO prow_job_run_tests (prow_job_run_id, prow_job_id, prow_job_run_timestamp,
+				prow_job_run_release, test_id, suite_id, status, duration, lifecycle, created_at, updated_at)
+			SELECT tm.prow_job_run_id, tm.prow_job_id, tm.prow_job_run_timestamp,
+				tm.prow_job_run_release, tm.test_id, tm.suite_id, tm.status, tm.duration, tm.lifecycle, NOW(), NOW()
+			FROM test_map tm
 			RETURNING id, test_id, suite_id,
 				prow_job_run_id, prow_job_run_timestamp, prow_job_run_release
 		)
 		INSERT INTO prow_job_run_test_outputs (prow_job_run_test_id, prow_job_run_test_timestamp,
 			prow_job_run_test_release, output, created_at, updated_at)
-		SELECT ins.id, ins.prow_job_run_timestamp, ins.prow_job_run_release, tmp.output, NOW(), NOW()
+		SELECT ins.id, ins.prow_job_run_timestamp, ins.prow_job_run_release, tm.output, NOW(), NOW()
 		FROM inserted ins
-		JOIN tests t ON t.id = ins.test_id
-		JOIN tmp_job_run_tests tmp ON tmp.test_name = t.name AND tmp.prow_job_run_id = ins.prow_job_run_id
-		LEFT JOIN suites s2 ON s2.name = tmp.suite_name AND s2.deleted_at IS NULL
-		WHERE tmp.output IS NOT NULL
-			AND ins.suite_id IS NOT DISTINCT FROM s2.id
+		JOIN test_map tm ON tm.prow_job_run_id = ins.prow_job_run_id
+			AND tm.test_id = ins.test_id
+			AND tm.suite_id IS NOT DISTINCT FROM ins.suite_id
+		WHERE tm.output IS NOT NULL
 	`); err != nil {
 		return fmt.Errorf("inserting prow_job_run_tests: %w", err)
 	}
