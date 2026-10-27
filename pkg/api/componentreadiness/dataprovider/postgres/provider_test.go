@@ -72,6 +72,49 @@ func TestTestFailuresExpression(t *testing.T) {
 	}
 }
 
+func TestTestDetailsJobNameSQL(t *testing.T) {
+	tests := []struct {
+		name            string
+		useReleaseName  bool
+		wantExpression  string
+		wantJoinPresent bool
+	}{
+		{
+			name:           "without PR filter uses Prow job name",
+			wantExpression: "pj.name",
+		},
+		{
+			name:            "PR filter uses releaseJobName with Prow fallback",
+			useReleaseName:  true,
+			wantExpression:  "COALESCE(NULLIF(split_part(release_job_name.value, ',', 1), ''), pj.name)",
+			wantJoinPresent: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expression, join := testDetailsJobNameSQL(tt.useReleaseName)
+			if expression != tt.wantExpression {
+				t.Errorf("expression = %q, want %q", expression, tt.wantExpression)
+			}
+			if got := join != ""; got != tt.wantJoinPresent {
+				t.Errorf("join present = %t, want %t", got, tt.wantJoinPresent)
+			}
+			if tt.wantJoinPresent {
+				for _, fragment := range []string{
+					"prow_job_run_annotations release_job_name",
+					"release_job_name.key = 'releaseJobName'",
+					"release_job_name.prow_job_run_timestamp = pjr.timestamp",
+				} {
+					if !strings.Contains(join, fragment) {
+						t.Errorf("join missing %q: %s", fragment, join)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestBuildTestDetailsRunScope(t *testing.T) {
 	start := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)

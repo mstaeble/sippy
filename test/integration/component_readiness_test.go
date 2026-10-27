@@ -3925,6 +3925,60 @@ func TestTestDetailsReport_AggregateBaseStats(t *testing.T) {
 	assert.Equal(t, test.Name, report.TestName)
 }
 
+func TestQuerySampleJobRunTestStatus_PRFilterGroupsByReleaseJobName(t *testing.T) {
+	dbc := crTestDB(t)
+	release := "4.16"
+	vc := createVariantCombination(t, dbc, []string{"Platform:aws", "Network:ovn"})
+	jobNames := []string{
+		"openshift-origin-123-ci-4.16-e2e-aws-ovn",
+		"openshift-origin-456-ci-4.16-e2e-aws-ovn",
+	}
+	jobs := []models.ProwJob{
+		createProwJobWithVC(t, dbc, jobNames[0], release, vc),
+		createProwJobWithVC(t, dbc, jobNames[1], release, vc),
+	}
+	test := intutil.CreateTest(t, dbc, "openshift-tests:[sig-storage] release job name test")
+	suite := intutil.CreateSuite(t, dbc, "openshift-tests-release-job-name")
+	tow := createTestOwnership(t, dbc, test.ID, &suite.ID, "openshift-tests:release-job-name", "Storage", []string{"PVC"})
+	pr := models.ProwPullRequest{Org: "openshift", Repo: "origin", Number: 123, SHA: "release-job-name-pr-123"}
+	require.NoError(t, dbc.DB.Create(&pr).Error)
+	releaseJobName := "periodic-ci-openshift-origin-master-nightly-4.16-e2e-aws-ovn"
+
+	for i, job := range jobs {
+		timestamp := time.Date(2024, 6, 5+i, 12, 0, 0, 0, time.UTC)
+		run := createProwJobRunForCR(t, dbc, job.ID, release, timestamp)
+		createProwJobRunTest(t, dbc, run.ID, job.ID, test.ID, &suite.ID, 1, release, timestamp)
+		require.NoError(t, dbc.DB.Create(&models.ProwJobRunProwPullRequest{
+			ProwJobRunID: run.ID, ProwPullRequestID: pr.ID,
+			ProwJobRunRelease: release, ProwJobRunTimestamp: timestamp,
+		}).Error)
+		annotationValue := releaseJobName
+		if i == 0 {
+			annotationValue += ",release-4.16"
+		}
+		require.NoError(t, dbc.DB.Create(&models.ProwJobRunAnnotation{
+			ProwJobRunID: run.ID, Key: "releaseJobName", Value: annotationValue,
+			ProwJobRunRelease: release, ProwJobRunTimestamp: timestamp,
+		}).Error)
+	}
+
+	provider := postgres.NewPostgresProvider(dbc, nil)
+	opts := testDetailsReqOptions(tow.UniqueID, map[string]string{"Platform": "aws", "Network": "ovn"})
+	includeVariants := map[string][]string{"Platform": {"aws"}, "Network": {"ovn"}}
+	opts.SampleRelease.PullRequestOptions = &reqopts.PullRequest{Org: "openshift", Repo: "origin", PRNumber: "123"}
+	filtered, errs := provider.QuerySampleJobRunTestStatus(context.Background(), opts, includeVariants,
+		opts.SampleRelease.Start, opts.SampleRelease.End)
+	require.Empty(t, errs)
+	require.Len(t, filtered, 1, "PR-filtered runs should share their annotated release job grouping")
+	assert.Contains(t, filtered, utils.NormalizeProwJobName(releaseJobName))
+
+	opts.SampleRelease.PullRequestOptions = nil
+	unfiltered, errs := provider.QuerySampleJobRunTestStatus(context.Background(), opts, includeVariants,
+		opts.SampleRelease.Start, opts.SampleRelease.End)
+	require.Empty(t, errs)
+	assert.Len(t, unfiltered, 2, "without a PR filter, runs should retain their Prow job names")
+}
+
 func TestTestDetailsReport_LifecycleFilteredTestFailures(t *testing.T) {
 	dbc := crTestDB(t)
 	release := "4.16"

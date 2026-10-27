@@ -369,11 +369,27 @@ func buildTestDetailsRunScope(release string, start, end time.Time, runFilter st
 	return clause, args
 }
 
+// testDetailsJobNameSQL uses releaseJobName to group PR-filtered payload runs
+// under their canonical release job while preserving ordinary job grouping.
+func testDetailsJobNameSQL(useReleaseJobName bool) (string, string) {
+	if !useReleaseJobName {
+		return "pj.name", ""
+	}
+
+	return "COALESCE(NULLIF(split_part(release_job_name.value, ',', 1), ''), pj.name)", `
+LEFT JOIN prow_job_run_annotations release_job_name
+    ON release_job_name.prow_job_run_id = pjr.id
+    AND release_job_name.prow_job_run_release = pjr.prow_job_release
+    AND release_job_name.prow_job_run_timestamp = pjr.timestamp
+    AND release_job_name.key = 'releaseJobName'
+    AND release_job_name.deleted_at IS NULL`
+}
+
 func (p *PostgresProvider) queryTestDetails(ctx context.Context, release string, start, end time.Time,
 	reqOptions reqopts.RequestOptions,
 	includeVariants map[string][]string,
 	lifecycles []string,
-	runFilter string, runArgs []any) (map[string][]crstatus.TestDetailsSummary, []error) {
+	runFilter string, runArgs []any, useReleaseJobName bool) (map[string][]crstatus.TestDetailsSummary, []error) {
 
 	if includeVariants == nil {
 		includeVariants = map[string][]string{}
@@ -404,12 +420,13 @@ func (p *PostgresProvider) queryTestDetails(ctx context.Context, release string,
 
 	testFailuresExpr, testFailuresArgs := testFailuresExpression(release, start, end, lifecycles)
 	scope, scopeArgs := buildTestDetailsRunScope(release, start, end, runFilter, runArgs)
+	jobNameExpr, jobNameJoin := testDetailsJobNameSQL(useReleaseJobName)
 
 	sqlQuery += fmt.Sprintf(`)
 SELECT
     tt.unique_id AS test_id,
     t.name AS test_name,
-    pj.name AS prowjob_name,
+    %s AS prowjob_name,
     CAST(pjr.id AS TEXT) AS prowjob_run_id,
     COALESCE(pjr.url, '') AS prowjob_url,
     pjr.timestamp AS prowjob_start,
@@ -426,10 +443,11 @@ JOIN prow_job_runs pjr ON pjr.id = pjrt.prow_job_run_id
     AND pjr.prow_job_release = pjrt.prow_job_run_release
     AND pjr.timestamp = pjrt.prow_job_run_timestamp
 JOIN prow_jobs pj ON pj.id = pjr.prow_job_id
+%s
 JOIN tests t ON t.id = pjrt.test_id
 WHERE %s
     AND pjrt.deleted_at IS NULL AND pjr.deleted_at IS NULL AND pj.deleted_at IS NULL
-    AND (pjr.labels IS NULL OR NOT pjr.labels @> ARRAY['InfraFailure'])`, testFailuresExpr, scope)
+    AND (pjr.labels IS NULL OR NOT pjr.labels @> ARRAY['InfraFailure'])`, jobNameExpr, testFailuresExpr, jobNameJoin, scope)
 
 	args = append(args, testFailuresArgs...)
 	args = append(args, scopeArgs...)
@@ -550,7 +568,7 @@ func (p *PostgresProvider) QueryBaseJobRunTestStatus(ctx context.Context, reqOpt
 		ctx,
 		reqOptions.BaseRelease.Name,
 		reqOptions.BaseRelease.Start, reqOptions.BaseRelease.End,
-		reqOptions, reqOptions.VariantOption.IncludeVariants, nil, "", nil,
+		reqOptions, reqOptions.VariantOption.IncludeVariants, nil, "", nil, false,
 	)
 	if len(errs) > 0 {
 		return result, errs
@@ -779,6 +797,7 @@ func (p *PostgresProvider) QuerySampleJobRunTestStatus(ctx context.Context, reqO
 		reqOptions.SampleRelease.Name,
 		start, end,
 		reqOptions, mergeCompareVariants(reqOptions, includeVariants), reqOptions.Lifecycles, runFilter, runArgs,
+		reqOptions.SampleRelease.PullRequestOptions != nil,
 	)
 }
 
