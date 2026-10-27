@@ -351,10 +351,29 @@ type testDetailRow struct {
 	JiraComponentID *uint          `gorm:"column:jira_component_id"`
 }
 
+// buildTestDetailsRunScope keeps the sample details query on the same run
+// selection as its report while preserving release scoping for ordinary and
+// basis details. Both timestamp predicates support the partitioned run tables.
+func buildTestDetailsRunScope(release string, start, end time.Time, runFilter string, runArgs []any) (string, []any) {
+	clause := `pjr.timestamp >= ? AND pjr.timestamp < ?
+        AND pjrt.prow_job_run_timestamp >= ? AND pjrt.prow_job_run_timestamp < ?`
+	args := []any{start, end, start, end}
+	if runFilter == "" {
+		clause += ` AND pj.release = ?
+        AND pjr.prow_job_release = ? AND pjrt.prow_job_run_release = ?`
+		args = append(args, release, release, release)
+	} else {
+		clause += " AND " + runFilter
+		args = append(args, runArgs...)
+	}
+	return clause, args
+}
+
 func (p *PostgresProvider) queryTestDetails(ctx context.Context, release string, start, end time.Time,
 	reqOptions reqopts.RequestOptions,
 	includeVariants map[string][]string,
-	lifecycles []string) (map[string][]crstatus.TestDetailsSummary, []error) {
+	lifecycles []string,
+	runFilter string, runArgs []any) (map[string][]crstatus.TestDetailsSummary, []error) {
 
 	if includeVariants == nil {
 		includeVariants = map[string][]string{}
@@ -384,6 +403,7 @@ func (p *PostgresProvider) queryTestDetails(ctx context.Context, release string,
 	}
 
 	testFailuresExpr, testFailuresArgs := testFailuresExpression(release, start, end, lifecycles)
+	scope, scopeArgs := buildTestDetailsRunScope(release, start, end, runFilter, runArgs)
 
 	sqlQuery += fmt.Sprintf(`)
 SELECT
@@ -407,16 +427,12 @@ JOIN prow_job_runs pjr ON pjr.id = pjrt.prow_job_run_id
     AND pjr.timestamp = pjrt.prow_job_run_timestamp
 JOIN prow_jobs pj ON pj.id = pjr.prow_job_id
 JOIN tests t ON t.id = pjrt.test_id
-WHERE pj.release = ?
-    AND pjr.timestamp >= ? AND pjr.timestamp < ?
-    AND pjr.prow_job_release = ?
-    AND pjrt.prow_job_run_release = ?
-    AND pjrt.prow_job_run_timestamp >= ? AND pjrt.prow_job_run_timestamp < ?
+WHERE %s
     AND pjrt.deleted_at IS NULL AND pjr.deleted_at IS NULL AND pj.deleted_at IS NULL
-    AND (pjr.labels IS NULL OR NOT pjr.labels @> ARRAY['InfraFailure'])`, testFailuresExpr)
+    AND (pjr.labels IS NULL OR NOT pjr.labels @> ARRAY['InfraFailure'])`, testFailuresExpr, scope)
 
 	args = append(args, testFailuresArgs...)
-	args = append(args, release, start, end, release, release, start, end)
+	args = append(args, scopeArgs...)
 	sqlQuery, args = appendTestDetailsLifecycleFilter(sqlQuery, args, lifecycles)
 
 	if len(includeVariants) > 0 {
@@ -534,7 +550,7 @@ func (p *PostgresProvider) QueryBaseJobRunTestStatus(ctx context.Context, reqOpt
 		ctx,
 		reqOptions.BaseRelease.Name,
 		reqOptions.BaseRelease.Start, reqOptions.BaseRelease.End,
-		reqOptions, reqOptions.VariantOption.IncludeVariants, nil,
+		reqOptions, reqOptions.VariantOption.IncludeVariants, nil, "", nil,
 	)
 	if len(errs) > 0 {
 		return result, errs
@@ -754,11 +770,15 @@ func (p *PostgresProvider) processAggregateRows(rows []aggregateTestDetailRow, r
 func (p *PostgresProvider) QuerySampleJobRunTestStatus(ctx context.Context, reqOptions reqopts.RequestOptions,
 	includeVariants map[string][]string,
 	start, end time.Time) (map[string][]crstatus.TestDetailsSummary, []error) {
+	runFilter, runArgs, err := buildSamplePullRequestAndPayloadRunFilter(reqOptions.SampleRelease)
+	if err != nil {
+		return nil, []error{err}
+	}
 	return p.queryTestDetails(
 		ctx,
 		reqOptions.SampleRelease.Name,
 		start, end,
-		reqOptions, mergeCompareVariants(reqOptions, includeVariants), reqOptions.Lifecycles,
+		reqOptions, mergeCompareVariants(reqOptions, includeVariants), reqOptions.Lifecycles, runFilter, runArgs,
 	)
 }
 

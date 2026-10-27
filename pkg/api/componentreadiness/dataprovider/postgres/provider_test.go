@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +22,7 @@ func TestTestFailuresExpression(t *testing.T) {
 		wantSubq   bool
 	}{
 		{
-			name:       "no lifecycles uses pre-computed column",
-			lifecycles: nil,
+			name: "no lifecycles uses pre-computed column",
 		},
 		{
 			name:       "empty lifecycles uses pre-computed column",
@@ -67,6 +67,53 @@ func TestTestFailuresExpression(t *testing.T) {
 				}
 			} else if !strings.Contains(expr, "COALESCE(pjr.test_failures, 0)") {
 				t.Fatal("should use pre-computed column when no lifecycles")
+			}
+		})
+	}
+}
+
+func TestBuildTestDetailsRunScope(t *testing.T) {
+	start := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	tests := []struct {
+		name             string
+		runFilter        string
+		runArgs          []any
+		wantReleaseScope bool
+		wantArgs         []any
+	}{
+		{
+			name:             "ordinary sample uses release and time",
+			wantReleaseScope: true,
+			wantArgs:         []any{start, end, start, end, "4.20", "4.20", "4.20"},
+		},
+		{
+			name:      "selected sample uses run membership and time",
+			runFilter: "EXISTS (SELECT 1 FROM selected_runs WHERE run_id = pjr.id AND tag = ?)",
+			runArgs:   []any{"payload-1"},
+			wantArgs:  []any{start, end, start, end, "payload-1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clause, args := buildTestDetailsRunScope("4.20", start, end, tt.runFilter, tt.runArgs)
+			for _, fragment := range []string{
+				"pjr.timestamp >= ? AND pjr.timestamp < ?",
+				"pjrt.prow_job_run_timestamp >= ? AND pjrt.prow_job_run_timestamp < ?",
+			} {
+				if !strings.Contains(clause, fragment) {
+					t.Errorf("run scope missing %q: %s", fragment, clause)
+				}
+			}
+			if got := strings.Contains(clause, "pj.release = ?"); got != tt.wantReleaseScope {
+				t.Errorf("release scope present = %t, want %t: %s", got, tt.wantReleaseScope, clause)
+			}
+			if tt.runFilter != "" && !strings.Contains(clause, tt.runFilter) {
+				t.Errorf("run scope missing sample selector: %s", clause)
+			}
+			if !reflect.DeepEqual(args, tt.wantArgs) {
+				t.Errorf("arguments = %#v, want %#v", args, tt.wantArgs)
 			}
 		})
 	}
