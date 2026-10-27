@@ -4054,6 +4054,45 @@ func TestTestDetailsReport_LifecycleFilteredTestFailures(t *testing.T) {
 	})
 }
 
+func TestQuerySampleJobRunTestStatus_PRLifecycleFailureCountUsesRunRelease(t *testing.T) {
+	dbc := crTestDB(t)
+	vc := createVariantCombination(t, dbc, []string{"Platform:aws", "Network:ovn"})
+	job := createProwJobWithVC(t, dbc, "periodic-pr-lifecycle-release", "4.17", vc)
+	test := intutil.CreateTest(t, dbc, "openshift-tests:[sig-storage] PR lifecycle release test")
+	informingTest := intutil.CreateTest(t, dbc, "openshift-tests:[sig-storage] PR lifecycle informing test")
+	suite := intutil.CreateSuite(t, dbc, "openshift-tests-pr-lifecycle-release")
+	tow := createTestOwnership(t, dbc, test.ID, &suite.ID, "openshift-tests:pr-lifecycle-release", "Storage", []string{"PVC"})
+	pr := models.ProwPullRequest{Org: "openshift", Repo: "origin", Number: 234, SHA: "pr-lifecycle-release-sha"}
+	require.NoError(t, dbc.DB.Create(&pr).Error)
+
+	runTime := time.Date(2024, 6, 5, 12, 0, 0, 0, time.UTC)
+	run := createProwJobRunForCR(t, dbc, job.ID, "4.17", runTime)
+	createProwJobRunTestWithLifecycle(t, dbc, run.ID, job.ID, test.ID, &suite.ID, 12, "4.17", runTime, "blocking")
+	createProwJobRunTestWithLifecycle(t, dbc, run.ID, job.ID, informingTest.ID, &suite.ID, 12, "4.17", runTime, "informing")
+	require.NoError(t, dbc.DB.Create(&models.ProwJobRunProwPullRequest{
+		ProwJobRunID: run.ID, ProwPullRequestID: pr.ID,
+		ProwJobRunRelease: "4.17", ProwJobRunTimestamp: runTime,
+	}).Error)
+
+	opts := testDetailsReqOptions(tow.UniqueID, map[string]string{"Platform": "aws", "Network": "ovn"})
+	opts.Lifecycles = []string{"blocking"}
+	opts.SampleRelease.PullRequestOptions = &reqopts.PullRequest{Org: "openshift", Repo: "origin", PRNumber: "234"}
+	provider := postgres.NewPostgresProvider(dbc, nil)
+	details, errs := provider.QuerySampleJobRunTestStatus(context.Background(), opts,
+		opts.VariantOption.IncludeVariants, opts.SampleRelease.Start, opts.SampleRelease.End)
+	require.Empty(t, errs)
+
+	var jobRuns []crstatus.JobRunDetail
+	for _, summaries := range details {
+		for _, summary := range summaries {
+			jobRuns = append(jobRuns, summary.JobRuns...)
+		}
+	}
+	require.Len(t, jobRuns, 1)
+	assert.Equal(t, 1, jobRuns[0].TestFailures,
+		"lifecycle failure count should use the run's 4.17 release, even though the request selects 4.16")
+}
+
 func TestTestDetailsReport_LastFailureTracking(t *testing.T) {
 	t.Run("last failure populated from sample failures", func(t *testing.T) {
 		dbc := crTestDB(t)

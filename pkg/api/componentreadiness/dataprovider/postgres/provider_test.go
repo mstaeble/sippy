@@ -11,7 +11,6 @@ import (
 )
 
 func TestTestFailuresExpression(t *testing.T) {
-	release := "4.16"
 	start := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC)
 
@@ -31,20 +30,20 @@ func TestTestFailuresExpression(t *testing.T) {
 		{
 			name:       "with lifecycles uses correlated subquery",
 			lifecycles: []string{"blocking"},
-			wantArgs:   5,
+			wantArgs:   4,
 			wantSubq:   true,
 		},
 		{
 			name:       "multiple lifecycles uses correlated subquery",
 			lifecycles: []string{"blocking", "informing"},
-			wantArgs:   5,
+			wantArgs:   4,
 			wantSubq:   true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			expr, args := testFailuresExpression(release, start, end, tt.lifecycles)
+			expr, args := testFailuresExpression(start, end, tt.lifecycles)
 			if len(args) != tt.wantArgs {
 				t.Fatalf("len(args) = %d, want %d", len(args), tt.wantArgs)
 			}
@@ -59,8 +58,8 @@ func TestTestFailuresExpression(t *testing.T) {
 				if !strings.Contains(expr, "lf.status = ?") {
 					t.Fatal("subquery should use placeholder for failure status")
 				}
-				if !strings.Contains(expr, "lf.prow_job_run_release = ?") {
-					t.Fatal("subquery should include explicit release filter")
+				if !strings.Contains(expr, "lf.prow_job_run_release = pjr.prow_job_release") {
+					t.Fatal("subquery should use the outer run's release")
 				}
 				if !strings.Contains(expr, "lf.prow_job_run_timestamp >= ?") {
 					t.Fatal("subquery should include explicit time range filter")

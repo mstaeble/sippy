@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/reqopts"
+	"gorm.io/gorm"
 )
 
 // buildSamplePullRequestAndPayloadRunFilter builds the pull request and payload
@@ -51,4 +54,65 @@ func buildSamplePullRequestAndPayloadRunFilter(release reqopts.Release, start, e
 	}
 
 	return strings.Join(clauses, " AND "), args, nil
+}
+
+// beginSamplePullRequestReleaseSnapshot opens a repeatable-read transaction and
+// finds every release with a run associated with the selected pull request in
+// the requested sample window. The caller uses the same transaction for the
+// main sample query so the release set and matching rows share a snapshot.
+func beginSamplePullRequestReleaseSnapshot(
+	ctx context.Context,
+	db *gorm.DB,
+	pr *reqopts.PullRequest,
+	start, end time.Time,
+) (*gorm.DB, []string, error) {
+	number, err := strconv.Atoi(pr.PRNumber)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid sample pull request number %q: %w", pr.PRNumber, err)
+	}
+
+	tx := db.WithContext(ctx).Begin(&sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	if tx.Error != nil {
+		return nil, nil, fmt.Errorf("starting pull request release lookup transaction: %w", tx.Error)
+	}
+
+	type pullRequestReleaseRow struct {
+		Release string `gorm:"column:prow_job_run_release"`
+	}
+	var releaseRows []pullRequestReleaseRow
+	err = tx.Raw(`
+		SELECT DISTINCT pr_run.prow_job_run_release
+		FROM prow_job_run_prow_pull_requests pr_run
+		JOIN prow_pull_requests pr ON pr.id = pr_run.prow_pull_request_id
+		WHERE pr.org = ? AND pr.repo = ? AND pr.number = ?
+			AND pr_run.prow_job_run_timestamp >= ? AND pr_run.prow_job_run_timestamp < ?
+			AND pr.deleted_at IS NULL`,
+		pr.Org, pr.Repo, number, start, end).Scan(&releaseRows).Error
+	if err != nil {
+		if rollbackErr := tx.Rollback().Error; rollbackErr != nil {
+			err = fmt.Errorf("%w (rolling back release lookup: %v)", err, rollbackErr)
+		}
+		return nil, nil, fmt.Errorf("finding releases for sample pull request: %w", err)
+	}
+	releases := make([]string, 0, len(releaseRows))
+	for _, row := range releaseRows {
+		releases = append(releases, row.Release)
+	}
+
+	return tx, releases, nil
+}
+
+// buildSamplePRReleasePartitionFilter constrains the run and test relations to
+// releases discovered from the selected pull request. testReleaseColumn is an
+// internal SQL column reference for the partitioned test relation. A non-nil
+// empty slice means the lookup found no matching runs and must return no rows.
+func buildSamplePRReleasePartitionFilter(releases []string, testReleaseColumn string) (string, []any) {
+	if releases == nil {
+		return "", nil
+	}
+	if len(releases) == 0 {
+		return "FALSE", nil
+	}
+	return testReleaseColumn + ".prow_job_run_release = ANY(?) AND pjr.prow_job_release = ANY(?)",
+		[]any{pq.Array(releases), pq.Array(releases)}
 }

@@ -543,6 +543,31 @@ func (p *PostgresProvider) queryCombinedTestStatus(
 		return map[string]crstatus.TestStatus{}, map[string]crstatus.TestStatus{}, nil
 	}
 
+	var prReleaseTx *gorm.DB
+	prReleaseTxCommitted := false
+	if pr := reqOptions.SampleRelease.PullRequestOptions; pr != nil {
+		var prReleases []string
+		prReleaseTx, prReleases, err = beginSamplePullRequestReleaseSnapshot(
+			ctx, p.dbc.DB, pr, reqOptions.SampleRelease.Start, reqOptions.SampleRelease.End,
+		)
+		if err != nil {
+			return nil, nil, []error{err}
+		}
+		defer func() {
+			if !prReleaseTxCommitted {
+				if rollbackErr := prReleaseTx.Rollback().Error; rollbackErr != nil && rollbackErr != gorm.ErrInvalidTransaction {
+					log.WithError(rollbackErr).Debug("rolling back PR-filtered component-readiness snapshot")
+				}
+			}
+		}()
+
+		prReleaseFilter, prReleaseArgs := buildSamplePRReleasePartitionFilter(prReleases, "e")
+		if prReleaseFilter != "" {
+			sampleSpec.whereFilter += " AND " + prReleaseFilter
+			sampleSpec.whereArgs = append(sampleSpec.whereArgs, prReleaseArgs...)
+		}
+	}
+
 	mergedLookup := make(map[uint]map[string]string, len(sampleVF.lookup)+len(baseVF.lookup))
 	maps.Copy(mergedLookup, sampleVF.lookup)
 	maps.Copy(mergedLookup, baseVF.lookup)
@@ -621,7 +646,7 @@ func (p *PostgresProvider) queryCombinedTestStatus(
 
 	// Execute with parallel hints
 	var sampleResult, baseResult map[string]crstatus.TestStatus
-	txErr := p.dbc.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	runCombinedQuery := func(tx *gorm.DB) error {
 		if txErr := tx.Exec(queryPlannerHints).Error; txErr != nil {
 			return fmt.Errorf("setting parallel query hints: %w", txErr)
 		}
@@ -686,7 +711,21 @@ func (p *PostgresProvider) queryCombinedTestStatus(
 		sampleResult = sampleFailures
 		baseResult = baseFailures
 		return nil
-	})
+	}
+
+	var txErr error
+	if prReleaseTx != nil {
+		txErr = runCombinedQuery(prReleaseTx)
+		if txErr == nil {
+			if err := prReleaseTx.Commit().Error; err != nil {
+				txErr = fmt.Errorf("committing PR-filtered component-readiness snapshot: %w", err)
+			} else {
+				prReleaseTxCommitted = true
+			}
+		}
+	} else {
+		txErr = p.dbc.DB.WithContext(ctx).Transaction(runCombinedQuery)
+	}
 	if txErr != nil {
 		return nil, nil, []error{txErr}
 	}

@@ -392,7 +392,10 @@ func (p *PostgresProvider) queryTestDetails(ctx context.Context, release string,
 	reqOptions reqopts.RequestOptions,
 	includeVariants map[string][]string,
 	lifecycles []string,
-	runFilter string, runArgs []any, useReleaseJobName bool) (map[string][]crstatus.TestDetailsSummary, []error) {
+	runFilter string, runArgs []any, useReleaseJobName bool, queryDB *gorm.DB) (map[string][]crstatus.TestDetailsSummary, []error) {
+	if queryDB == nil {
+		queryDB = p.dbc.DB
+	}
 
 	if includeVariants == nil {
 		includeVariants = map[string][]string{}
@@ -421,7 +424,7 @@ func (p *PostgresProvider) queryTestDetails(ctx context.Context, release string,
 		args = append(args, testIDs)
 	}
 
-	testFailuresExpr, testFailuresArgs := testFailuresExpression(release, start, end, lifecycles)
+	testFailuresExpr, testFailuresArgs := testFailuresExpression(start, end, lifecycles)
 	scope, scopeArgs := buildTestDetailsRunScope(release, start, end, runFilter, runArgs)
 	jobNameExpr, jobNameJoin, jobNameArgs := testDetailsJobNameSQL(useReleaseJobName, start, end)
 
@@ -468,7 +471,7 @@ WHERE %s
 	sqlQuery += " ORDER BY pjr.timestamp"
 
 	var rows []testDetailRow
-	if err := p.dbc.DB.WithContext(ctx).Raw(sqlQuery, args...).Scan(&rows).Error; err != nil {
+	if err := queryDB.WithContext(ctx).Raw(sqlQuery, args...).Scan(&rows).Error; err != nil {
 		return nil, []error{fmt.Errorf("querying test details: %w", err)}
 	}
 
@@ -542,19 +545,19 @@ WHERE %s
 // lifecycle (unlike the pre-computed column which counts all lifecycles), so the
 // same run may report a different failure count depending on the filter. This
 // matches the BigQuery provider's COUNT(DISTINCT test_name) semantics.
-func testFailuresExpression(release string, start, end time.Time, lifecycles []string) (string, []any) {
+func testFailuresExpression(start, end time.Time, lifecycles []string) (string, []any) {
 	if len(lifecycles) == 0 {
 		return "COALESCE(pjr.test_failures, 0) AS test_failures", nil
 	}
 	return `(SELECT COUNT(DISTINCT lf.test_id) FROM prow_job_run_tests lf
             WHERE lf.prow_job_run_id = pjr.id
-            AND lf.prow_job_run_release = ?
+            AND lf.prow_job_run_release = pjr.prow_job_release
             AND lf.prow_job_run_timestamp >= ? AND lf.prow_job_run_timestamp < ?
             AND lf.prow_job_run_timestamp = pjr.timestamp
             AND lf.status = ?
             AND lf.lifecycle = ANY(?)
             AND lf.deleted_at IS NULL) AS test_failures`,
-		[]any{release, start, end, int(sippyprocessingv1.TestStatusFailure), pq.Array(lifecycles)}
+		[]any{start, end, int(sippyprocessingv1.TestStatusFailure), pq.Array(lifecycles)}
 }
 
 // appendTestDetailsLifecycleFilter keeps sample test details aligned with the
@@ -572,7 +575,7 @@ func (p *PostgresProvider) QueryBaseJobRunTestStatus(ctx context.Context, reqOpt
 		ctx,
 		reqOptions.BaseRelease.Name,
 		reqOptions.BaseRelease.Start, reqOptions.BaseRelease.End,
-		reqOptions, reqOptions.VariantOption.IncludeVariants, nil, "", nil, false,
+		reqOptions, reqOptions.VariantOption.IncludeVariants, nil, "", nil, false, nil,
 	)
 	if len(errs) > 0 {
 		return result, errs
@@ -796,13 +799,49 @@ func (p *PostgresProvider) QuerySampleJobRunTestStatus(ctx context.Context, reqO
 	if err != nil {
 		return nil, []error{err}
 	}
-	return p.queryTestDetails(
+	var queryDB *gorm.DB
+	var prReleaseTx *gorm.DB
+	prReleaseTxCommitted := false
+	if pr := reqOptions.SampleRelease.PullRequestOptions; pr != nil {
+		var releases []string
+		prReleaseTx, releases, err = beginSamplePullRequestReleaseSnapshot(
+			ctx, p.dbc.DB, pr, start, end)
+		if err != nil {
+			return nil, []error{err}
+		}
+		defer func() {
+			if !prReleaseTxCommitted {
+				if rollbackErr := prReleaseTx.Rollback().Error; rollbackErr != nil {
+					log.WithError(rollbackErr).Debug("rolling back PR-filtered test-details snapshot")
+				}
+			}
+		}()
+		queryDB = prReleaseTx
+
+		prReleaseFilter, prReleaseArgs := buildSamplePRReleasePartitionFilter(releases, "pjrt")
+		if prReleaseFilter != "" {
+			runFilter += " AND " + prReleaseFilter
+			runArgs = append(runArgs, prReleaseArgs...)
+		}
+	}
+
+	result, errs := p.queryTestDetails(
 		ctx,
 		reqOptions.SampleRelease.Name,
 		start, end,
 		reqOptions, mergeCompareVariants(reqOptions, includeVariants), reqOptions.Lifecycles, runFilter, runArgs,
-		reqOptions.SampleRelease.PullRequestOptions != nil,
+		reqOptions.SampleRelease.PullRequestOptions != nil, queryDB,
 	)
+	if len(errs) > 0 {
+		return result, errs
+	}
+	if prReleaseTx != nil {
+		if err := prReleaseTx.Commit().Error; err != nil {
+			return nil, []error{fmt.Errorf("committing PR-filtered test-details snapshot: %w", err)}
+		}
+		prReleaseTxCommitted = true
+	}
+	return result, nil
 }
 
 // --- JobQuerier ---
