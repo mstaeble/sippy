@@ -73,11 +73,14 @@ func TestTestFailuresExpression(t *testing.T) {
 }
 
 func TestTestDetailsJobNameSQL(t *testing.T) {
+	start := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name            string
 		useReleaseName  bool
 		wantExpression  string
 		wantJoinPresent bool
+		wantArgs        []any
 	}{
 		{
 			name:           "without PR filter uses Prow job name",
@@ -88,23 +91,29 @@ func TestTestDetailsJobNameSQL(t *testing.T) {
 			useReleaseName:  true,
 			wantExpression:  "COALESCE(NULLIF(split_part(release_job_name.value, ',', 1), ''), pj.name)",
 			wantJoinPresent: true,
+			wantArgs:        []any{start, end},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			expression, join := testDetailsJobNameSQL(tt.useReleaseName)
+			expression, join, args := testDetailsJobNameSQL(tt.useReleaseName, start, end)
 			if expression != tt.wantExpression {
 				t.Errorf("expression = %q, want %q", expression, tt.wantExpression)
 			}
 			if got := join != ""; got != tt.wantJoinPresent {
 				t.Errorf("join present = %t, want %t", got, tt.wantJoinPresent)
 			}
+			if !reflect.DeepEqual(args, tt.wantArgs) {
+				t.Errorf("arguments = %#v, want %#v", args, tt.wantArgs)
+			}
 			if tt.wantJoinPresent {
 				for _, fragment := range []string{
 					"prow_job_run_annotations release_job_name",
 					"release_job_name.key = 'releaseJobName'",
 					"release_job_name.prow_job_run_timestamp = pjr.timestamp",
+					"release_job_name.prow_job_run_timestamp >= ?",
+					"release_job_name.prow_job_run_timestamp < ?",
 				} {
 					if !strings.Contains(join, fragment) {
 						t.Errorf("join missing %q: %s", fragment, join)

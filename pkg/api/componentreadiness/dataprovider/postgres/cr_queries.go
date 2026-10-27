@@ -486,7 +486,9 @@ func (p *PostgresProvider) queryCombinedTestStatus(
 		mergeCompareVariants(reqOptions, reqOptions.VariantOption.IncludeVariants), reqOptions)
 	baseIncludeVariants := mergeRequestedVariants(reqOptions.VariantOption.IncludeVariants, reqOptions)
 
-	sampleRunFilter, sampleRunArgs, err := buildSamplePullRequestAndPayloadRunFilter(reqOptions.SampleRelease)
+	sampleRunFilter, sampleRunArgs, err := buildSamplePullRequestAndPayloadRunFilter(
+		reqOptions.SampleRelease, reqOptions.SampleRelease.Start, reqOptions.SampleRelease.End,
+	)
 	if err != nil {
 		return nil, nil, []error{err}
 	}

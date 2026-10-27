@@ -4,16 +4,18 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lib/pq"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/reqopts"
 )
 
 // buildSamplePullRequestAndPayloadRunFilter builds the pull request and payload
-// tag predicates shared by sample reports and test details. EXISTS avoids
-// multiplying test results when a run has multiple associations. The caller
-// must provide the prow_job_runs alias pjr.
-func buildSamplePullRequestAndPayloadRunFilter(release reqopts.Release) (string, []any, error) {
+// tag predicates shared by sample reports and test details. The time bounds
+// constrain the partitioned pull request run lookup. EXISTS avoids multiplying
+// test results when a run has multiple associations. The caller must provide
+// the prow_job_runs alias pjr.
+func buildSamplePullRequestAndPayloadRunFilter(release reqopts.Release, start, end time.Time) (string, []any, error) {
 	var clauses []string
 	var args []any
 
@@ -30,9 +32,10 @@ func buildSamplePullRequestAndPayloadRunFilter(release reqopts.Release) (string,
 				AND pr_run.prow_job_run_release = pjr.prow_job_release
 				AND pr_run.prow_job_run_timestamp = pjr.timestamp
 				AND pr.org = ? AND pr.repo = ? AND pr.number = ?
+				AND pr_run.prow_job_run_timestamp >= ? AND pr_run.prow_job_run_timestamp < ?
 				AND pr.deleted_at IS NULL
 		)`)
-		args = append(args, pr.Org, pr.Repo, number)
+		args = append(args, pr.Org, pr.Repo, number, start, end)
 	}
 
 	if payload := release.PayloadOptions; payload != nil {

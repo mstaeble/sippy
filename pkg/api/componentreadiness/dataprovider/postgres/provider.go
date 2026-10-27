@@ -369,11 +369,12 @@ func buildTestDetailsRunScope(release string, start, end time.Time, runFilter st
 	return clause, args
 }
 
-// testDetailsJobNameSQL uses releaseJobName to group PR-filtered payload runs
-// under their canonical release job while preserving ordinary job grouping.
-func testDetailsJobNameSQL(useReleaseJobName bool) (string, string) {
+// testDetailsJobNameSQL uses releaseJobName to group PR-filtered test runs
+// under their canonical release job while limiting the partitioned annotation
+// lookup to the requested sample range.
+func testDetailsJobNameSQL(useReleaseJobName bool, start, end time.Time) (string, string, []any) {
 	if !useReleaseJobName {
-		return "pj.name", ""
+		return "pj.name", "", nil
 	}
 
 	return "COALESCE(NULLIF(split_part(release_job_name.value, ',', 1), ''), pj.name)", `
@@ -382,7 +383,9 @@ LEFT JOIN prow_job_run_annotations release_job_name
     AND release_job_name.prow_job_run_release = pjr.prow_job_release
     AND release_job_name.prow_job_run_timestamp = pjr.timestamp
     AND release_job_name.key = 'releaseJobName'
-    AND release_job_name.deleted_at IS NULL`
+    AND release_job_name.deleted_at IS NULL
+    AND release_job_name.prow_job_run_timestamp >= ?
+    AND release_job_name.prow_job_run_timestamp < ?`, []any{start, end}
 }
 
 func (p *PostgresProvider) queryTestDetails(ctx context.Context, release string, start, end time.Time,
@@ -420,7 +423,7 @@ func (p *PostgresProvider) queryTestDetails(ctx context.Context, release string,
 
 	testFailuresExpr, testFailuresArgs := testFailuresExpression(release, start, end, lifecycles)
 	scope, scopeArgs := buildTestDetailsRunScope(release, start, end, runFilter, runArgs)
-	jobNameExpr, jobNameJoin := testDetailsJobNameSQL(useReleaseJobName)
+	jobNameExpr, jobNameJoin, jobNameArgs := testDetailsJobNameSQL(useReleaseJobName, start, end)
 
 	sqlQuery += fmt.Sprintf(`)
 SELECT
@@ -450,6 +453,7 @@ WHERE %s
     AND (pjr.labels IS NULL OR NOT pjr.labels @> ARRAY['InfraFailure'])`, jobNameExpr, testFailuresExpr, jobNameJoin, scope)
 
 	args = append(args, testFailuresArgs...)
+	args = append(args, jobNameArgs...)
 	args = append(args, scopeArgs...)
 	sqlQuery, args = appendTestDetailsLifecycleFilter(sqlQuery, args, lifecycles)
 
@@ -788,7 +792,7 @@ func (p *PostgresProvider) processAggregateRows(rows []aggregateTestDetailRow, r
 func (p *PostgresProvider) QuerySampleJobRunTestStatus(ctx context.Context, reqOptions reqopts.RequestOptions,
 	includeVariants map[string][]string,
 	start, end time.Time) (map[string][]crstatus.TestDetailsSummary, []error) {
-	runFilter, runArgs, err := buildSamplePullRequestAndPayloadRunFilter(reqOptions.SampleRelease)
+	runFilter, runArgs, err := buildSamplePullRequestAndPayloadRunFilter(reqOptions.SampleRelease, start, end)
 	if err != nil {
 		return nil, []error{err}
 	}
