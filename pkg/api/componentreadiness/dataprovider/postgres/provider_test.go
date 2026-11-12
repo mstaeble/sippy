@@ -9,6 +9,7 @@ import (
 	"github.com/lib/pq"
 	"k8s.io/apimachinery/pkg/util/sets"
 
+	"github.com/openshift/sippy/pkg/apis/api/componentreport/crstatus"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/crtest"
 	"github.com/openshift/sippy/pkg/apis/api/componentreport/reqopts"
 )
@@ -151,9 +152,9 @@ func TestBuildTestDetailsRunScope(t *testing.T) {
 		wantArgs         []any
 	}{
 		{
-			name:             "ordinary sample uses release and time",
-			wantReleaseScope: true,
-			wantArgs:         []any{start, end, start, end, "4.20", "4.20", "4.20"},
+			name:             "ordinary details use stored release and time",
+			wantReleaseScope: false,
+			wantArgs:         []any{start, end, start, end, "4.20", "4.20"},
 		},
 		{
 			name:      "selected sample uses run membership and time",
@@ -176,6 +177,9 @@ func TestBuildTestDetailsRunScope(t *testing.T) {
 			}
 			if got := strings.Contains(clause, "pj.release = ?"); got != tt.wantReleaseScope {
 				t.Errorf("release scope present = %t, want %t: %s", got, tt.wantReleaseScope, clause)
+			}
+			if tt.runFilter == "" && (!strings.Contains(clause, "pjr.prow_job_release = ?") || !strings.Contains(clause, "pjrt.prow_job_run_release = ?")) {
+				t.Errorf("run scope missing stored release filters: %s", clause)
 			}
 			if tt.runFilter != "" && !strings.Contains(clause, tt.runFilter) {
 				t.Errorf("run scope missing sample selector: %s", clause)
@@ -390,56 +394,56 @@ func TestSpotCheckMatchesTestFilters(t *testing.T) {
 		},
 		{
 			name:       "capability filter keeps a match",
-			reqOptions: reqopts.RequestOptions{TestFilters: reqopts.TestFilters{Capabilities: []string{"Scaling"}}},
+			reqOptions: reqopts.RequestOptions{TestOptions: reqopts.TestOptions{TestFilters: reqopts.TestFilters{Capabilities: []string{"Scaling"}}}},
 			testID:     scalingID,
 			capability: "Scaling",
 			want:       true,
 		},
 		{
 			name:       "capability filter matches case-insensitively",
-			reqOptions: reqopts.RequestOptions{TestFilters: reqopts.TestFilters{Capabilities: []string{"cpu partitioning"}}},
+			reqOptions: reqopts.RequestOptions{TestOptions: reqopts.TestOptions{TestFilters: reqopts.TestFilters{Capabilities: []string{"cpu partitioning"}}}},
 			testID:     crtest.SpotCheckTestID("spotcheck-30d", "Node / Kubelet", "CPU Partitioning"),
 			capability: "CPU Partitioning",
 			want:       true,
 		},
 		{
 			name:       "capability filter drops other capabilities",
-			reqOptions: reqopts.RequestOptions{TestFilters: reqopts.TestFilters{Capabilities: []string{"Scaling"}}},
+			reqOptions: reqopts.RequestOptions{TestOptions: reqopts.TestOptions{TestFilters: reqopts.TestFilters{Capabilities: []string{"Scaling"}}}},
 			testID:     crtest.SpotCheckTestID("spotcheck-30d", "Node / Kubelet", "CPU Partitioning"),
 			capability: "CPU Partitioning",
 			want:       false,
 		},
 		{
 			name:       "an empty test identification filters nothing",
-			reqOptions: reqopts.RequestOptions{TestIDOptions: []reqopts.TestIdentification{{}}},
+			reqOptions: reqopts.RequestOptions{TestOptions: reqopts.TestOptions{TestIDOptions: []reqopts.TestIdentification{{}}}},
 			testID:     scalingID,
 			capability: "Scaling",
 			want:       true,
 		},
 		{
 			name:       "exact test ID keeps its own result",
-			reqOptions: reqopts.RequestOptions{TestIDOptions: []reqopts.TestIdentification{{TestID: scalingID}}},
+			reqOptions: reqopts.RequestOptions{TestOptions: reqopts.TestOptions{TestIDOptions: []reqopts.TestIdentification{{TestID: scalingID}}}},
 			testID:     scalingID,
 			capability: "Scaling",
 			want:       true,
 		},
 		{
 			name:       "exact test ID drops sibling spot-check tests",
-			reqOptions: reqopts.RequestOptions{TestIDOptions: []reqopts.TestIdentification{{TestID: scalingID}}},
+			reqOptions: reqopts.RequestOptions{TestOptions: reqopts.TestOptions{TestIDOptions: []reqopts.TestIdentification{{TestID: scalingID}}}},
 			testID:     recoveryID,
 			capability: "Recovery",
 			want:       false,
 		},
 		{
 			name:       "exact test ID of a regular test drops spot-check results",
-			reqOptions: reqopts.RequestOptions{TestIDOptions: []reqopts.TestIdentification{{TestID: "openshift-tests:abc123"}}},
+			reqOptions: reqopts.RequestOptions{TestOptions: reqopts.TestOptions{TestIDOptions: []reqopts.TestIdentification{{TestID: "openshift-tests:abc123"}}}},
 			testID:     scalingID,
 			capability: "Scaling",
 			want:       false,
 		},
 		{
 			name:       "requested capability drops other capabilities",
-			reqOptions: reqopts.RequestOptions{TestIDOptions: []reqopts.TestIdentification{{Component: "Etcd", Capability: "Scaling"}}},
+			reqOptions: reqopts.RequestOptions{TestOptions: reqopts.TestOptions{TestIDOptions: []reqopts.TestIdentification{{Component: "Etcd", Capability: "Scaling"}}}},
 			testID:     recoveryID,
 			capability: "Recovery",
 			want:       false,
@@ -458,9 +462,9 @@ func TestSpotCheckSampleVariants(t *testing.T) {
 	tier := map[string][]string{"JobTier": {"spotcheck-30d"}}
 
 	t.Run("without cross-compare the request's variants are kept", func(t *testing.T) {
-		reqOptions := reqopts.RequestOptions{VariantOption: reqopts.Variants{
+		reqOptions := reqopts.RequestOptions{AnalysisOptions: reqopts.AnalysisOptions{VariantOption: reqopts.Variants{
 			IncludeVariants: map[string][]string{"Platform": {"aws"}},
-		}}
+		}}}
 		got, ok := spotCheckSampleVariants(reqOptions, tier)
 		if !ok {
 			t.Fatal("expected variants to match")
@@ -472,11 +476,11 @@ func TestSpotCheckSampleVariants(t *testing.T) {
 	})
 
 	t.Run("cross-compare selects the sample-side values", func(t *testing.T) {
-		reqOptions := reqopts.RequestOptions{VariantOption: reqopts.Variants{
+		reqOptions := reqopts.RequestOptions{AnalysisOptions: reqopts.AnalysisOptions{VariantOption: reqopts.Variants{
 			IncludeVariants:     map[string][]string{"Platform": {"aws"}, "Network": {"ovn"}},
 			CompareVariants:     map[string][]string{"Platform": {"gcp"}},
 			VariantCrossCompare: []string{"Platform"},
-		}}
+		}}}
 		got, ok := spotCheckSampleVariants(reqOptions, tier)
 		if !ok {
 			t.Fatal("expected variants to match")
@@ -488,9 +492,9 @@ func TestSpotCheckSampleVariants(t *testing.T) {
 	})
 
 	t.Run("the request's variants are not modified", func(t *testing.T) {
-		reqOptions := reqopts.RequestOptions{VariantOption: reqopts.Variants{
+		reqOptions := reqopts.RequestOptions{AnalysisOptions: reqopts.AnalysisOptions{VariantOption: reqopts.Variants{
 			IncludeVariants: map[string][]string{"Platform": {"aws"}},
-		}}
+		}}}
 		spotCheckSampleVariants(reqOptions, tier)
 		if _, ok := reqOptions.VariantOption.IncludeVariants["JobTier"]; ok {
 			t.Error("sample variants leaked into the request's IncludeVariants")
@@ -552,13 +556,134 @@ func TestSpotCheckSampleVariantsNarrowing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reqOptions := reqopts.RequestOptions{VariantOption: reqopts.Variants{IncludeVariants: tt.request}}
+			reqOptions := reqopts.RequestOptions{AnalysisOptions: reqopts.AnalysisOptions{VariantOption: reqopts.Variants{IncludeVariants: tt.request}}}
 			got, ok := spotCheckSampleVariants(reqOptions, tt.sample)
 			if ok != tt.wantSomeMatch {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantSomeMatch)
 			}
 			if ok && !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMergeGASnapshotAndRawDetails(t *testing.T) {
+	tests := []struct {
+		name      string
+		snapshots map[string][]crstatus.TestDetailsSummary
+		raw       map[string][]crstatus.TestDetailsSummary
+		assert    func(t *testing.T, got map[string][]crstatus.TestDetailsSummary)
+	}{
+		{
+			name: "snapshot key receives raw runs for the same stored job",
+			snapshots: map[string][]crstatus.TestDetailsSummary{
+				"normalized-job": {
+					{
+						TestKeyStr: "test-a",
+						ProwJob:    "periodic-ci-release-4.20-job",
+						Stats:      crtest.NewTestStats(8, 2, 0, false),
+					},
+				},
+			},
+			raw: map[string][]crstatus.TestDetailsSummary{
+				"normalized-job": {
+					{
+						TestKeyStr: "test-a",
+						ProwJob:    "periodic-ci-release-4.20-job",
+						JobRuns: []crstatus.JobRunDetail{
+							{ProwJobRunID: "run-1"},
+						},
+					},
+				},
+			},
+			assert: func(t *testing.T, got map[string][]crstatus.TestDetailsSummary) {
+				t.Helper()
+				summaries := got["normalized-job"]
+				if len(summaries) != 1 {
+					t.Fatalf("got %d summaries, want 1", len(summaries))
+				}
+				if got := summaries[0].Stats; got != crtest.NewTestStats(8, 2, 0, false) {
+					t.Errorf("stats = %#v, want snapshot counts", got)
+				}
+				if len(summaries[0].JobRuns) != 1 || summaries[0].JobRuns[0].ProwJobRunID != "run-1" {
+					t.Errorf("job runs = %#v, want raw run-1", summaries[0].JobRuns)
+				}
+			},
+		},
+		{
+			name:      "raw only key retains stored job identity and clears stats",
+			snapshots: map[string][]crstatus.TestDetailsSummary{},
+			raw: map[string][]crstatus.TestDetailsSummary{
+				"normalized-job": {
+					{
+						TestKeyStr: "test-a",
+						ProwJob:    "periodic-ci-release-4.20-job",
+						Stats:      crtest.NewTestStats(1, 0, 0, false),
+						JobRuns: []crstatus.JobRunDetail{
+							{ProwJobRunID: "run-1"},
+						},
+					},
+				},
+			},
+			assert: func(t *testing.T, got map[string][]crstatus.TestDetailsSummary) {
+				t.Helper()
+				summaries := got["normalized-job"]
+				if len(summaries) != 1 {
+					t.Fatalf("got %d summaries, want 1", len(summaries))
+				}
+				if summaries[0].ProwJob != "periodic-ci-release-4.20-job" {
+					t.Errorf("stored Prow job = %q, want raw stored job", summaries[0].ProwJob)
+				}
+				if summaries[0].Stats != (crtest.Stats{}) {
+					t.Errorf("stats = %#v, want zero stats for raw-only key", summaries[0].Stats)
+				}
+				if len(summaries[0].JobRuns) != 1 || summaries[0].JobRuns[0].ProwJobRunID != "run-1" {
+					t.Errorf("job runs = %#v, want raw run-1", summaries[0].JobRuns)
+				}
+			},
+		},
+		{
+			name: "stored jobs sharing a normalized map key attach raw runs once",
+			snapshots: map[string][]crstatus.TestDetailsSummary{
+				"normalized-job": {
+					{TestKeyStr: "test-a", ProwJob: "periodic-ci-release-4.20-job", Stats: crtest.NewTestStats(8, 2, 0, false)},
+					{TestKeyStr: "test-a", ProwJob: "periodic-ci-release-4.21-job", Stats: crtest.NewTestStats(7, 3, 0, false)},
+				},
+			},
+			raw: map[string][]crstatus.TestDetailsSummary{
+				"normalized-job": {
+					{
+						TestKeyStr: "test-a",
+						ProwJob:    "periodic-ci-release-4.20-job",
+						JobRuns: []crstatus.JobRunDetail{
+							{ProwJobRunID: "run-1"},
+						},
+					},
+				},
+			},
+			assert: func(t *testing.T, got map[string][]crstatus.TestDetailsSummary) {
+				t.Helper()
+				summaries := got["normalized-job"]
+				if len(summaries) != 2 {
+					t.Fatalf("got %d summaries, want 2", len(summaries))
+				}
+				if summaries[0].ProwJob != "periodic-ci-release-4.20-job" || len(summaries[0].JobRuns) != 1 {
+					t.Errorf("first summary = %#v, want only stored 4.20 job to receive raw run", summaries[0])
+				}
+				if summaries[1].ProwJob != "periodic-ci-release-4.21-job" || len(summaries[1].JobRuns) != 0 {
+					t.Errorf("second summary = %#v, want stored 4.21 job without duplicated raw run", summaries[1])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeGASnapshotAndRawDetails(tt.snapshots, tt.raw)
+			tt.assert(t, got)
+			if len(tt.snapshots["normalized-job"]) > 0 && len(tt.snapshots["normalized-job"][0].JobRuns) != 0 {
+				t.Errorf("snapshot input was modified: %#v", tt.snapshots["normalized-job"][0].JobRuns)
 			}
 		})
 	}
